@@ -172,15 +172,16 @@ class ASREngine:
     """封裝所有模型。transcribe() 加互斥鎖，多執行緒安全。"""
 
     def __init__(self):
-        self.ready     = False
-        self._lock     = threading.Lock()
-        self.vad_sess  = None
-        self.audio_enc = None
-        self.embedder  = None
-        self.dec_req   = None
-        self.processor = None   # LightProcessor（不含 torch）
-        self.pad_id    = None
-        self.cc        = None
+        self.ready       = False
+        self._lock       = threading.Lock()
+        self.vad_sess    = None
+        self.audio_enc   = None
+        self.embedder    = None
+        self.dec_req     = None
+        self.processor   = None   # LightProcessor（不含 torch）
+        self.pad_id      = None
+        self.cc          = None
+        self.diar_engine = None   # DiarizationEngine（可選）
 
     def load(self, device: str = "CPU", model_dir: Path = None, cb=None):
         """從背景執行緒呼叫。cb(msg) 用於更新 UI 狀態。"""
@@ -201,6 +202,15 @@ class ASREngine:
         self.vad_sess = ort.InferenceSession(
             str(vad_path), providers=["CPUExecutionProvider"]
         )
+
+        _s("載入說話者分離模型…")
+        try:
+            from diarize import DiarizationEngine
+            diar_dir = model_dir / "diarization"
+            eng = DiarizationEngine(diar_dir)
+            self.diar_engine = eng if eng.ready else None
+        except Exception:
+            self.diar_engine = None
 
         _s(f"編譯 ASR 模型（{device}）…")
         core = ov.Core()
@@ -279,34 +289,62 @@ class ASREngine:
         progress_cb=None,
         language: str | None = None,
         context: str | None = None,
+        diarize: bool = False,
     ) -> Path | None:
         """音檔 → SRT，回傳 SRT 路徑。
         language : 強制語系（如 "Chinese"），None 表示自動偵測
         context  : 辨識提示（歌詞/關鍵字），放入 system message
+        diarize  : True 時用說話者分離取代 VAD，SRT 加說話者前綴
         """
         import librosa
         audio, _ = librosa.load(str(audio_path), sr=SAMPLE_RATE, mono=True)
-        groups = _detect_speech_groups(audio, self.vad_sess)
-        if not groups:
-            return None
 
-        all_subs: list[tuple[float, float, str]] = []
-        for i, (g0, g1, chunk) in enumerate(groups):
+        # ── 分段策略：說話者分離 vs 傳統 VAD ─────────────────────────
+        # groups_spk: [(g0_sec, g1_sec, audio_chunk, speaker_label | None), ...]
+        use_diar = diarize and self.diar_engine is not None and self.diar_engine.ready
+        if use_diar:
+            diar_segs = self.diar_engine.diarize(audio)
+            if not diar_segs:
+                return None
+            groups_spk = [
+                (t0, t1,
+                 audio[int(t0 * SAMPLE_RATE): int(t1 * SAMPLE_RATE)],
+                 spk)
+                for t0, t1, spk in diar_segs
+            ]
+        else:
+            vad_groups = _detect_speech_groups(audio, self.vad_sess)
+            if not vad_groups:
+                return None
+            groups_spk = [(g0, g1, chunk, None) for g0, g1, chunk in vad_groups]
+
+        # ── ASR 逐段轉錄 ─────────────────────────────────────────────
+        all_subs: list[tuple[float, float, str, str | None]] = []
+        total = len(groups_spk)
+        for i, (g0, g1, chunk, spk) in enumerate(groups_spk):
             if progress_cb:
-                progress_cb(i, len(groups), f"[{i+1}/{len(groups)}] {g0:.1f}s ~ {g1:.1f}s")
+                spk_info = f" [{spk}]" if spk else ""
+                progress_cb(i, total,
+                            f"[{i+1}/{total}] {g0:.1f}s~{g1:.1f}s{spk_info}")
             text = self.transcribe(chunk, language=language, context=context)
             if not text:
                 continue
             lines = _split_to_lines(text)
-            all_subs.extend(_assign_ts(lines, g0, g1))
+            all_subs.extend(
+                (s, e, line, spk) for s, e, line in _assign_ts(lines, g0, g1)
+            )
+
+        if not all_subs:
+            return None
 
         if progress_cb:
-            progress_cb(len(groups), len(groups), "寫入 SRT…")
+            progress_cb(total, total, "寫入 SRT…")
 
         out = SRT_DIR / (audio_path.stem + ".srt")
         with open(out, "w", encoding="utf-8") as f:
-            for idx, (s, e, line) in enumerate(all_subs, 1):
-                f.write(f"{idx}\n{_srt_ts(s)} --> {_srt_ts(e)}\n{line}\n\n")
+            for idx, (s, e, line, spk) in enumerate(all_subs, 1):
+                prefix = f"{spk}：" if spk else ""
+                f.write(f"{idx}\n{_srt_ts(s)} --> {_srt_ts(e)}\n{prefix}{line}\n\n")
         return out
 
 
@@ -434,6 +472,7 @@ class App(ctk.CTk):
         self._lang_list: list[str]           = []     # 載入後填入
         self._selected_language: str | None  = None   # 目前選定的語系
         self._file_hint: str | None          = None   # 音檔轉字幕 hint
+        self._file_diarize: bool             = False  # 說話者分離開關
 
         self._build_ui()
         self._detect_ov_devices()
@@ -540,6 +579,13 @@ class App(ctk.CTk):
             command=lambda: os.startfile(str(SRT_DIR)),
         )
         self.open_dir_btn.pack(side="left")
+
+        self._diarize_var = ctk.BooleanVar(value=False)
+        self.diarize_chk = ctk.CTkCheckBox(
+            row2, text="說話者分離", variable=self._diarize_var,
+            font=FONT_BODY, state="disabled",
+        )
+        self.diarize_chk.pack(side="left", padx=(20, 0))
 
         # 辨識提示（Hint / Context）
         hint_hdr = ctk.CTkFrame(parent, fg_color="transparent")
@@ -937,6 +983,9 @@ class App(ctk.CTk):
             self._lang_list = self.engine.processor.supported_languages
             self.lang_combo.configure(values=langs, state="readonly")
             self.lang_var.set("自動偵測")
+        # 說話者分離 checkbox（僅在模型可用時啟用）
+        if self.engine.diar_engine and self.engine.diar_engine.ready:
+            self.diarize_chk.configure(state="normal")
 
     def _on_models_failed(self, device: str, reason: str):
         """模型載入失敗：還原 UI，讓使用者可以切換裝置後重試。"""
@@ -1018,11 +1067,12 @@ class App(ctk.CTk):
             return
 
         self._audio_file = path
-        # 讀取語系與 hint（在主執行緒讀取 UI 值，再傳給 worker）
+        # 讀取語系、hint 與說話者分離選項（在主執行緒讀取 UI 值，再傳給 worker）
         lang_sel = self.lang_var.get()
         self._selected_language = lang_sel if lang_sel != "自動偵測" else None
         hint_text = self.hint_box.get("1.0", "end").strip()
         self._file_hint = hint_text if hint_text else None
+        self._file_diarize = self._diarize_var.get()
 
         self._converting = True
         self.convert_btn.configure(state="disabled", text="轉換中…")
@@ -1033,9 +1083,10 @@ class App(ctk.CTk):
     def _convert_worker(self):
         path = self._audio_file
 
-        # 擷取語系與 hint（在主執行緒已取好，直接帶入 worker）
+        # 擷取語系、hint 與說話者分離（在主執行緒已取好，直接帶入 worker）
         language = self._selected_language
         context  = self._file_hint
+        diarize  = getattr(self, "_file_diarize", False)
 
         def prog_cb(done, total, msg):
             pct = done / total if total > 0 else 0
@@ -1045,11 +1096,13 @@ class App(ctk.CTk):
 
         try:
             t0 = time.perf_counter()
-            lang_info = f"  語系：{language or '自動'}"
-            hint_info = f"  提示：{context[:30]}…" if context and len(context) > 30 else (f"  提示：{context}" if context else "")
-            self._file_log(f"開始處理：{path.name}{lang_info}{hint_info}")
+            lang_info  = f"  語系：{language or '自動'}"
+            hint_info  = f"  提示：{context[:30]}…" if context and len(context) > 30 else (f"  提示：{context}" if context else "")
+            diar_info  = "  [說話者分離]" if diarize else ""
+            self._file_log(f"開始處理：{path.name}{lang_info}{hint_info}{diar_info}")
             srt = self.engine.process_file(
-                path, progress_cb=prog_cb, language=language, context=context
+                path, progress_cb=prog_cb, language=language,
+                context=context, diarize=diarize,
             )
             elapsed = time.perf_counter() - t0
 

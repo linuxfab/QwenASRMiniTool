@@ -12,6 +12,9 @@
 - 音訊檔案（MP3 / WAV / FLAC / M4A / OGG）→ SRT 字幕
 - 即時語音辨識（麥克風輸入），並非完全串流即時，會在停頓中自動處理辨識
 - 自動 VAD 靜音偵測，分段轉錄
+- **說話者分離**（Speaker Diarization）：可指定說話人數，SRT 自動標記說話者身份
+- **多語系辨識**：支援中文、日文、英文等 30 種語系，亦可設為自動偵測
+- **辨識提示**（參考文字）：可貼入歌詞、關鍵字或背景說明，提升辨識準確度
 - 繁體中文輸出，可辨識中英混合
 - 首次執行請選擇資料夾自動下載模型（約 1.2 GB）
 - Portable 版本包括模型開箱即用，Basic 版本檔案較小，採自動下載模型
@@ -49,6 +52,63 @@
 
 ---
 
+### 說話者分離（0221 新增）
+
+![說話者分離介面](Readme/Readme03.jpg)
+
+音檔轉字幕時，可勾選「**說話者分離**」，並透過「**人數**」下拉選單指定說話人數（自動 / 2–8 人）。開啟後，SRT 字幕的每一段文字會自動加上「**說話者1：**」、「**說話者2：**」等標記。
+
+**適用場景與限制：**
+- Podcast、NotebookLM 雙人對談等**輪流說話**的形式效果最佳，分段清楚明顯
+- 多人會議或**同時說話**的情境效果較不理想
+- 首次使用時，程式會自動提示下載說話者分離模型（約 32 MB），下載完成即可啟用
+
+> **建議：** 已知說話人數時請明確指定，可有效避免過度分割（例如 2 人對話被誤判為 5 人）。
+
+---
+
+### 多語系辨識（0221 新增）
+
+![多語系辨識介面](Readme/Readme04.jpg)
+
+上方工具列新增「**語系**」下拉選單，可強制指定辨識語言（預設為自動偵測）。支援中文、日文、英文、韓文、法文等共 30 種語系，對音檔轉字幕及即時辨識均有效。
+
+- 自動偵測：模型依音訊內容判斷語言，適合多語混合的音訊
+- 指定語系（如「Japanese」）：鎖定語言，可減少誤辨的情形
+- 日語歌詞辨識的掉字率較中文高，但咬字清晰的音調仍能正確辨識
+
+---
+
+### 辨識提示 / 參考文字（0221 新增）
+
+![辨識提示介面](Readme/Readme05.jpg)
+
+在「**音檔轉字幕**」和「**即時轉換**」分頁各新增一個「**辨識提示**」文字框，可貼入歌詞、關鍵字或背景說明文字，協助 ASR 模型提升辨識準確度。
+
+- **應用範例：** 貼入 Suno 歌詞，再進行即時演唱辨識，確認歌詞是否唱正確
+- 有參考文字的情況下，歌詞辨識的字詞準確度相對較高
+- 亦可讀入 `.txt` 檔案，或使用右鍵選單直接貼上文字
+
+---
+
+## 更版方式
+
+### Python 版本
+
+```bash
+git pull
+```
+
+拉取後直接執行 `app.py` 即可，程式啟動時會自動檢查模型完整性並在必要時補齊缺少的檔案。
+
+### EXE 編譯版本（Portable / Basic）
+
+- **已下載過 Portable 版本的使用者**：不需重新下載 Portable，僅需下載 **Basic 版本**，解壓縮後覆蓋現有資料夾即可。
+- 啟動後程式會自動檢查模型完整性；若為首次使用說話者分離功能，會彈出提示下載說話者分離模型（約 32 MB）。
+- 原有的 `Subtitle` 輸出資料夾內容**不會受到影響**。
+
+---
+
 ## 系統需求
 
 | 項目 | 最低要求 |
@@ -71,6 +131,7 @@
 | OpenVINO INT8 量化版（備用下載源） | [Echo9Zulu/Qwen3-ASR-0.6B-INT8_ASYM-OpenVINO](https://huggingface.co/Echo9Zulu/Qwen3-ASR-0.6B-INT8_ASYM-OpenVINO) |
 | 原始 PyTorch 模型 | [Qwen/Qwen3-ASR-0.6B](https://huggingface.co/Qwen/Qwen3-ASR-0.6B) |
 | VAD 模型 | [snakers4/silero-vad v4.0](https://github.com/snakers4/silero-vad) |
+| 說話者分離模型（分段 + 聲紋）| [altunenes/speaker-diarization-community-1-onnx](https://huggingface.co/altunenes/speaker-diarization-community-1-onnx) |
 
 ---
 
@@ -95,12 +156,16 @@ python generate_prompt_template.py
 app.py                  # CustomTkinter GUI 主程式
 downloader.py           # 模型完整性檢查與自動下載（含備援 URL）
 processor_numpy.py      # 純 numpy Mel / BPE 處理器（不依賴 torch）
+diarize.py              # 說話者分離引擎（兩階段聚類，不依賴 torch）
 generate_prompt_template.py  # 從原始模型提取 prompt 模板
-prompt_template.json    # Chat template token ID
+prompt_template.json    # Chat template token ID（含語系 suffix IDs）
 ov_models/
   mel_filters.npy       # 預計算 Mel 濾波器
   silero_vad_v4.onnx    # VAD 靜音偵測模型（執行後下載）
   qwen3_asr_int8/       # OpenVINO INT8 模型（執行後下載，~1.2 GB）
+  diarization/          # 說話者分離 ONNX 模型（首次使用時下載，~32 MB）
+    segmentation-community-1.onnx
+    embedding_model.onnx
 ```
 
 ---

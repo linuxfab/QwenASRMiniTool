@@ -98,6 +98,59 @@ echo  [OK] Using Python:
 "%PYTHON_EXE%" -c "import sys; print('        ' + sys.executable)"
 echo.
 
+REM ---- Package check (system Python only; venv installs during setup) ----
+if not "!ENV_CHOICE!"=="1" goto :pkg_check_done
+
+echo  Checking required packages...
+set "CHK=%SCRIPT_DIR%__chkpkg__.py"
+echo import importlib.util                                                    > "%CHK%"
+echo pkgs=[('qwen_asr','qwen-asr'),('customtkinter','customtkinter'),        >> "%CHK%"
+echo       ('onnxruntime','onnxruntime'),('numpy','numpy'),                  >> "%CHK%"
+echo       ('librosa','librosa'),('sounddevice','sounddevice'),              >> "%CHK%"
+echo       ('opencc','opencc-python-reimplemented'),                         >> "%CHK%"
+echo       ('streamlit','streamlit'),('huggingface_hub','huggingface-hub'),  >> "%CHK%"
+echo       ('torch','torch')]                                                 >> "%CHK%"
+echo missing=[p for m,p in pkgs if importlib.util.find_spec(m) is None]     >> "%CHK%"
+echo print(','.join(missing) if missing else 'OK')                           >> "%CHK%"
+
+for /f "tokens=*" %%L in ('"%PYTHON_EXE%" "%CHK%" 2^>nul') do set PKG_RESULT=%%L
+del "%CHK%" 2>nul
+
+if "!PKG_RESULT!"=="OK" (
+    echo  [OK] All required packages present.
+    goto :pkg_check_done
+)
+if "!PKG_RESULT!"=="" (
+    echo  [WARN] Package check failed, continuing anyway...
+    goto :pkg_check_done
+)
+
+echo.
+echo  [WARN] Missing packages detected:
+echo         !PKG_RESULT!
+echo.
+echo   [1] Install now  ^(pip install -r requirements-gpu.txt^)
+echo   [2] Continue without installing
+echo.
+set /p INST_CHOICE=" Select [1/2, default=1]: "
+if "!INST_CHOICE!"=="" set INST_CHOICE=1
+
+if "!INST_CHOICE!"=="1" (
+    echo.
+    echo  [>>] Installing missing packages...
+    "%PYTHON_EXE%" -m pip install -r "%SCRIPT_DIR%requirements-gpu.txt"
+    if errorlevel 1 (
+        echo  [WARN] Some packages may have failed. Check output above.
+    ) else (
+        echo  [OK] Installation complete.
+    )
+) else (
+    echo  [!] Continuing without installing. App may fail if packages are missing.
+)
+
+:pkg_check_done
+echo.
+
 REM ---- Check / download GPU models ---------------------------
 echo  Step 2/3: GPU Models
 echo  --------------------------------------------------------

@@ -200,7 +200,7 @@ echo  ============================================================
 echo   Streamlit Web Frontend
 echo  ============================================================
 echo.
-echo   Local    :  http://localhost:8501
+echo   Local    :  http://127.0.0.1:8501
 echo   Network  :  http://!LOCAL_IP!:8501
 echo.
 echo   Share the Network URL with anyone on the same LAN.

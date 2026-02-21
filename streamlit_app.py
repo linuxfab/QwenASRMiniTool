@@ -364,18 +364,59 @@ def _find_vad() -> Path | None:
     return None
 
 
-def _audio_bytes_to_np(audio_bytes: bytes) -> np.ndarray | None:
-    """將 st.audio_input 回傳的 bytes（WAV）轉為 16kHz float32 array。"""
+# ══════════════════════════════════════════════════════════
+# 伺服器端麥克風錄音（全域狀態，跨 Streamlit rerun 存活）
+# ══════════════════════════════════════════════════════════
+
+_RT_LOCK: threading.Lock = threading.Lock()
+_RT: dict = {"recording": False, "buffer": [], "stop_event": None, "thread": None}
+
+
+def _rt_record_worker(stop_event: threading.Event) -> None:
+    """背景執行緒：持續錄音直到 stop_event 被設定。"""
     try:
-        import librosa
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-            f.write(audio_bytes)
-            tmp = f.name
-        audio, _ = librosa.load(tmp, sr=SAMPLE_RATE, mono=True)
-        os.unlink(tmp)
-        return audio
-    except Exception:
-        return None
+        import sounddevice as sd
+        buf: list[np.ndarray] = []
+        with sd.InputStream(samplerate=SAMPLE_RATE, channels=1,
+                            dtype="float32", blocksize=VAD_CHUNK) as stream:
+            while not stop_event.is_set():
+                data, _ = stream.read(VAD_CHUNK)
+                buf.append(data.copy())
+        with _RT_LOCK:
+            _RT["buffer"] = buf
+    except Exception as exc:
+        with _RT_LOCK:
+            _RT["buffer"] = []
+            _RT["error"] = str(exc)
+
+
+def _rt_start() -> None:
+    with _RT_LOCK:
+        if _RT["recording"]:
+            return
+        stop_ev = threading.Event()
+        _RT["stop_event"] = stop_ev
+        _RT["recording"]  = True
+        _RT["buffer"]     = []
+        _RT.pop("error", None)
+        t = threading.Thread(target=_rt_record_worker, args=(stop_ev,), daemon=True)
+        _RT["thread"] = t
+        t.start()
+
+
+def _rt_stop() -> np.ndarray | None:
+    """停止錄音，等待執行緒結束，回傳 float32 audio array。"""
+    with _RT_LOCK:
+        if not _RT["recording"]:
+            return None
+        _RT["recording"] = False
+        if _RT["stop_event"]:
+            _RT["stop_event"].set()
+    t = _RT.get("thread")
+    if t:
+        t.join(timeout=3)
+    buf = _RT.get("buffer", [])
+    return np.concatenate(buf).flatten() if buf else None
 
 
 # ══════════════════════════════════════════════════════════
@@ -763,43 +804,66 @@ def _tab_realtime(eng: dict | None):
     🎙 即時語音辨識
   </div>
   <div style="font-size:0.82rem; color:rgba(148,163,184,0.6);">
-    按下麥克風錄音 → 放開後自動辨識，可持續累積字幕
+    開始錄音 → 停止後自動辨識，可持續累積字幕（使用伺服器麥克風）
   </div>
 </div>""", unsafe_allow_html=True)
 
-    col_mic, col_hint = st.columns([1, 2])
+    is_rec = _RT["recording"]
+    rt_err = _RT.get("error")
 
+    # ── 控制列 ──
+    col_hint, col_start, col_stop = st.columns([3, 1, 1])
     with col_hint:
         rt_hint = st.text_input(
             "辨識提示（可選）",
             placeholder="歌詞、關鍵字或背景說明…",
             help="引導模型辨識特定詞彙",
         )
+    with col_start:
+        if st.button("▶ 開始錄音",
+                     disabled=is_rec or eng is None,
+                     use_container_width=True):
+            _rt_start()
+            st.rerun()
+    with col_stop:
+        if st.button("■ 停止",
+                     disabled=not is_rec,
+                     use_container_width=True):
+            audio = _rt_stop()
+            if audio is not None:
+                st.session_state["rt_pending_audio"] = audio
+            st.rerun()
 
-    with col_mic:
-        audio_data = st.audio_input(
-            "點此錄音",
-            disabled=eng is None,
-        )
+    # ── 錄音狀態指示器 ──
+    if is_rec:
+        st.markdown("""
+<div style="display:flex; align-items:center; gap:8px; padding:8px 14px;
+            background:rgba(239,68,68,0.12); border:1px solid rgba(239,68,68,0.3);
+            border-radius:10px; margin:8px 0;">
+  <span style="color:#f87171; font-size:1.1rem;">●</span>
+  <span style="color:#fca5a5; font-size:0.88rem; font-weight:600;">錄音中，請說話…</span>
+</div>""", unsafe_allow_html=True)
 
-    # ── 自動處理錄音 ──
-    if audio_data is not None and eng is not None:
+    if rt_err:
+        st.error(f"麥克風錯誤：{rt_err}")
+
+    # ── 處理已停止的錄音 ──
+    if "rt_pending_audio" in st.session_state and eng is not None:
+        audio_np: np.ndarray = st.session_state.pop("rt_pending_audio")
         lang    = st.session_state.get("_lang")
         context = rt_hint.strip() or None
 
-        with st.spinner("辨識中…"):
-            audio_np = _audio_bytes_to_np(audio_data.getvalue())
-
-        if audio_np is not None and len(audio_np) >= SAMPLE_RATE * 0.5:
-            try:
-                text = _transcribe(eng, audio_np, language=lang, context=context)
-                if text:
-                    ts = datetime.now().strftime("%H:%M:%S")
-                    if "rt_log" not in st.session_state:
-                        st.session_state["rt_log"] = []
-                    st.session_state["rt_log"].append((ts, text))
-            except Exception as e:
-                st.error(f"辨識失敗：{e}")
+        if len(audio_np) >= SAMPLE_RATE * 0.5:
+            with st.spinner("辨識中…"):
+                try:
+                    text = _transcribe(eng, audio_np, language=lang, context=context)
+                    if text:
+                        ts = datetime.now().strftime("%H:%M:%S")
+                        if "rt_log" not in st.session_state:
+                            st.session_state["rt_log"] = []
+                        st.session_state["rt_log"].append((ts, text))
+                except Exception as e:
+                    st.error(f"辨識失敗：{e}")
         else:
             st.warning("錄音太短，請再錄一次（至少 0.5 秒）")
 
@@ -835,7 +899,7 @@ def _tab_realtime(eng: dict | None):
         st.markdown("""
 <div style="text-align:center; padding: 40px 0; color:rgba(100,116,139,0.5);">
   <div style="font-size:2.5rem; margin-bottom:8px;">🎤</div>
-  <div style="font-size:0.85rem;">按下上方麥克風開始錄音</div>
+  <div style="font-size:0.85rem;">按下「▶ 開始錄音」開始，「■ 停止」後自動辨識</div>
 </div>""", unsafe_allow_html=True)
     else:
         st.markdown(

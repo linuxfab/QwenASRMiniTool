@@ -91,10 +91,35 @@ def _get_paths(model_dir: Path) -> tuple[Path, Path]:
     return model_dir / "qwen3_asr_int8", model_dir / "silero_vad_v4.onnx"
 
 
+_LFS_MAGIC = b"version https://git-lfs.github.com/spec/v1"
+
+def _file_is_real(path: Path) -> bool:
+    """回傳 True 表示檔案存在且不是 Git LFS pointer。
+
+    當使用者以「git clone」取得 HuggingFace 模型倉庫但未安裝
+    git-lfs 時，所有 LFS 追蹤的檔案（*.bin、*.onnx、*.npy 等）
+    在磁碟上會是約 130 bytes 的 pointer 文字檔：
+        version https://git-lfs.github.com/spec/v1
+        oid sha256:<hash>
+        size <bytes>
+    Path.exists() 對 pointer 回傳 True，導致下載器誤以為
+    檔案已完整下載而跳過，最終模型無法載入。
+    本函式以讀取前 43 bytes 來識別並拒絕 LFS pointer。
+    """
+    if not path.exists():
+        return False
+    try:
+        with open(path, "rb") as f:
+            header = f.read(len(_LFS_MAGIC))
+        return header != _LFS_MAGIC
+    except OSError:
+        return False
+
+
 def quick_check_diarization(model_dir: Path) -> bool:
-    """快速檢查說話者分離模型是否存在（只檢查檔案存在，不驗證雜湊）。"""
+    """快速檢查說話者分離模型是否存在且非 LFS pointer。"""
     diar_dir = model_dir / "diarization"
-    return all((diar_dir / fname).exists() for fname in DIAR_FILES)
+    return all(_file_is_real(diar_dir / fname) for fname in DIAR_FILES)
 
 
 def download_diarization(diar_dir: Path, progress_cb=None):
@@ -108,7 +133,7 @@ def download_diarization(diar_dir: Path, progress_cb=None):
 
     for idx, (fname, url) in enumerate(DIAR_FILES.items()):
         dest = diar_dir / fname
-        if dest.exists():
+        if _file_is_real(dest):
             if progress_cb:
                 progress_cb((idx + 1) / total_tasks, f"✅ {fname}（已存在）")
             continue
@@ -135,10 +160,10 @@ def download_diarization(diar_dir: Path, progress_cb=None):
 
 
 def quick_check_1p7b(model_dir: Path) -> bool:
-    """快速檢查 1.7B KV-cache INT8 模型是否完整（只檢查存在，不驗證雜湊）。"""
+    """快速檢查 1.7B KV-cache INT8 模型是否完整（非 LFS pointer）。"""
     kv_dir = model_dir / "qwen3_asr_1p7b_kv_int8"
     for fname in _1P7B_REQUIRED_BIN + _1P7B_REQUIRED_OTHER:
-        if not (kv_dir / fname).exists():
+        if not _file_is_real(kv_dir / fname):
             return False
     return True
 
@@ -153,7 +178,7 @@ def download_1p7b(model_dir: Path, progress_cb=None):
     kv_dir.mkdir(parents=True, exist_ok=True)
 
     all_files = _1P7B_REQUIRED_BIN + _1P7B_REQUIRED_OTHER
-    tasks = [f for f in all_files if not (kv_dir / f).exists()]
+    tasks = [f for f in all_files if not _file_is_real(kv_dir / f)]
 
     if not tasks:
         if progress_cb:
@@ -208,12 +233,12 @@ def _sha256(path: Path, progress_cb=None) -> str:
 
 
 def quick_check(model_dir: Path) -> bool:
-    """快速存在性檢查（不計算雜湊）。"""
+    """快速存在性檢查（排除 Git LFS pointer，不計算雜湊）。"""
     ov_dir, vad_path = _get_paths(model_dir)
-    if not vad_path.exists():
+    if not _file_is_real(vad_path):
         return False
     for fname in list(REQUIRED_BIN) + REQUIRED_OTHER:
-        if not (ov_dir / fname).exists():
+        if not _file_is_real(ov_dir / fname):
             return False
     return True
 
@@ -326,13 +351,13 @@ def download_all(model_dir: Path, progress_cb=None):
     ov_dir.mkdir(parents=True, exist_ok=True)
 
     # 建立下載任務清單 (dest, hf_fname_or_direct_url, is_direct_url)
+    # _file_is_real() 同時排除「不存在」與「Git LFS pointer」兩種情況
     tasks: list[tuple[Path, str, bool]] = []
     for fname in list(REQUIRED_BIN.keys()) + REQUIRED_OTHER:
         dest = ov_dir / fname
-        # 小型設定檔若已存在則跳過；大型 .bin 若存在也先跳過（full_verify 再補）
-        if not dest.exists():
+        if not _file_is_real(dest):
             tasks.append((dest, fname, False))   # HF 相對路徑，使用備援機制
-    if not vad_path.exists():
+    if not _file_is_real(vad_path):
         tasks.append((vad_path, _VAD_URL, True))  # 直接 URL，不需備援
 
     if not tasks:

@@ -91,10 +91,27 @@ def _get_paths(model_dir: Path) -> tuple[Path, Path]:
     return model_dir / "qwen3_asr_int8", model_dir / "silero_vad_v4.onnx"
 
 
+# ── Git LFS 指標檔偵測 ────────────────────────────────────────────────
+# git clone（未安裝 git-lfs）時，大型檔案會被替換成 ~130 byte 的指標文字檔。
+# Path.exists() 回傳 True，但檔案內容無效，必須額外檢查。
+_LFS_MAGIC = b"version https://git-lfs.github.com/spec/v1"
+
+def _file_is_real(path: Path) -> bool:
+    """回傳 True 當且僅當檔案存在且不是 Git LFS 指標檔。"""
+    if not path.exists():
+        return False
+    try:
+        with open(path, "rb") as f:
+            header = f.read(len(_LFS_MAGIC))
+        return header != _LFS_MAGIC
+    except OSError:
+        return False
+
+
 def quick_check_diarization(model_dir: Path) -> bool:
     """快速檢查說話者分離模型是否存在（只檢查檔案存在，不驗證雜湊）。"""
     diar_dir = model_dir / "diarization"
-    return all((diar_dir / fname).exists() for fname in DIAR_FILES)
+    return all(_file_is_real(diar_dir / fname) for fname in DIAR_FILES)
 
 
 def download_diarization(diar_dir: Path, progress_cb=None):
@@ -108,7 +125,7 @@ def download_diarization(diar_dir: Path, progress_cb=None):
 
     for idx, (fname, url) in enumerate(DIAR_FILES.items()):
         dest = diar_dir / fname
-        if dest.exists():
+        if _file_is_real(dest):
             if progress_cb:
                 progress_cb((idx + 1) / total_tasks, f"✅ {fname}（已存在）")
             continue
@@ -138,7 +155,7 @@ def quick_check_1p7b(model_dir: Path) -> bool:
     """快速檢查 1.7B KV-cache INT8 模型是否完整（只檢查存在，不驗證雜湊）。"""
     kv_dir = model_dir / "qwen3_asr_1p7b_kv_int8"
     for fname in _1P7B_REQUIRED_BIN + _1P7B_REQUIRED_OTHER:
-        if not (kv_dir / fname).exists():
+        if not _file_is_real(kv_dir / fname):
             return False
     return True
 
@@ -153,7 +170,7 @@ def download_1p7b(model_dir: Path, progress_cb=None):
     kv_dir.mkdir(parents=True, exist_ok=True)
 
     all_files = _1P7B_REQUIRED_BIN + _1P7B_REQUIRED_OTHER
-    tasks = [f for f in all_files if not (kv_dir / f).exists()]
+    tasks = [f for f in all_files if not _file_is_real(kv_dir / f)]
 
     if not tasks:
         if progress_cb:
@@ -210,10 +227,10 @@ def _sha256(path: Path, progress_cb=None) -> str:
 def quick_check(model_dir: Path) -> bool:
     """快速存在性檢查（不計算雜湊）。"""
     ov_dir, vad_path = _get_paths(model_dir)
-    if not vad_path.exists():
+    if not _file_is_real(vad_path):
         return False
     for fname in list(REQUIRED_BIN) + REQUIRED_OTHER:
-        if not (ov_dir / fname).exists():
+        if not _file_is_real(ov_dir / fname):
             return False
     return True
 
@@ -221,10 +238,10 @@ def quick_check(model_dir: Path) -> bool:
 def full_verify(model_dir: Path, progress_cb=None) -> tuple[bool, str]:
     """存在 + SHA256 完整驗證。"""
     ov_dir, vad_path = _get_paths(model_dir)
-    if not vad_path.exists():
+    if not _file_is_real(vad_path):
         return False, f"遺失：{vad_path.name}"
     for fname in list(REQUIRED_BIN) + REQUIRED_OTHER:
-        if not (ov_dir / fname).exists():
+        if not _file_is_real(ov_dir / fname):
             return False, f"遺失：{fname}"
 
     total_files = len(REQUIRED_BIN)
@@ -330,9 +347,10 @@ def download_all(model_dir: Path, progress_cb=None):
     for fname in list(REQUIRED_BIN.keys()) + REQUIRED_OTHER:
         dest = ov_dir / fname
         # 小型設定檔若已存在則跳過；大型 .bin 若存在也先跳過（full_verify 再補）
-        if not dest.exists():
+        # 使用 _file_is_real() 避免將 Git LFS 指標檔誤判為有效檔案
+        if not _file_is_real(dest):
             tasks.append((dest, fname, False))   # HF 相對路徑，使用備援機制
-    if not vad_path.exists():
+    if not _file_is_real(vad_path):
         tasks.append((vad_path, _VAD_URL, True))  # 直接 URL，不需備援
 
     if not tasks:

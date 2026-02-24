@@ -21,32 +21,6 @@ for _stream_name in ("stdout", "stderr"):
                 _io.TextIOWrapper(_s.buffer, encoding="utf-8", errors="replace"))
 del _os, _sys, _io, _stream_name, _s
 
-# ── Streamlit 子程序模式 ─────────────────────────────────────────────────────
-# QwenASR.exe --streamlit-mode script.py --server.port PORT ...
-# 編譯版本：讓 frozen Python 自己執行 streamlit（不需要獨立的 _python/）
-# 必須在 tkinter / customtkinter import 之前偵測，避免 GUI 初始化干擾
-import sys as _sys_sl
-if "--streamlit-mode" in _sys_sl.argv:
-    import io as _io_sl, os as _os_sl
-    _sl_idx  = _sys_sl.argv.index("--streamlit-mode")
-    _sl_args = _sys_sl.argv[_sl_idx + 1:]  # [script.py, --server.port, PORT …]
-    # PyInstaller windowed 模式下 sys.stdout/stderr 可能為 None；
-    # subprocess.Popen(stdout=PIPE) 會將 fd 1 設為 pipe，還原後才能被父程序讀取
-    for _fd_sl, _attr_sl in ((1, "stdout"), (2, "stderr")):
-        _cur_sl = getattr(_sys_sl, _attr_sl, None)
-        if _cur_sl is None or not getattr(_cur_sl, "writable", lambda: False)():
-            try:
-                _sys_sl.__dict__[_attr_sl] = _io_sl.TextIOWrapper(
-                    _os_sl.fdopen(_fd_sl, "wb", closefd=False),
-                    encoding="utf-8", line_buffering=True,
-                )
-            except Exception:
-                pass
-    from streamlit.web.cli import main as _sl_main
-    _sys_sl.argv = ["streamlit", "run"] + _sl_args
-    _sys_sl.exit(_sl_main(standalone_mode=True))
-del _sys_sl
-
 import json
 import os
 import re
@@ -802,7 +776,9 @@ class App(ctk.CTk):
 
         from setting import SettingsTab
         self._settings_tab = SettingsTab(
-            self.tabs.tab("  設定  "), self, show_service=True)
+            self.tabs.tab("  設定  "), self,
+            # 編譯版（frozen）不含 streamlit，服務 tab 僅在開發模式顯示
+            show_service=not getattr(sys, "frozen", False))
         self._settings_tab.pack(fill="both", expand=True)
 
     # ── 批次辨識 tab ───────────────────────────────────

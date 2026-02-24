@@ -28,10 +28,8 @@ IF EXIST "F:\AIStudio\QwenASR\build_venv\Scripts\python.exe" (
 SET PYTHON=%VENV%\Scripts\python.exe
 SET SRC=F:\AIStudio\QwenASR
 
-echo === Step 1: Install PyInstaller + Streamlit ===
-REM streamlit is bundled into _internal/ via --collect-all streamlit
-REM so QwenASR.exe can serve the web UI without a separate Python install.
-%PYTHON% -m pip install pyinstaller streamlit --quiet
+echo === Step 1: Install PyInstaller ===
+%PYTHON% -m pip install pyinstaller --quiet
 
 echo.
 echo === Step 2: Locate dependency paths ===
@@ -89,8 +87,6 @@ REM Chinese Windows (cp950 default encoding).
     --add-data "%SRC%\ov_models\silero_vad_v4.onnx;ov_models" ^
     --runtime-hook "%SRC%\runtime_hook_utf8.py" ^
     --collect-all tokenizers ^
-    --collect-all streamlit ^
-    --collect-all tornado ^
     --hidden-import openvino ^
     --hidden-import openvino.runtime ^
     --hidden-import onnxruntime ^
@@ -157,16 +153,16 @@ IF EXIST "%SRC%\dist\QwenASR\QwenASR.exe" (
     )
 
     echo.
-    REM Copy streamlit_vulkan.py (Streamlit web UI script).
-    REM The service is launched by QwenASR.exe --streamlit-mode streamlit_vulkan.py
-    REM using the frozen Python in _internal/ (no separate python.exe needed).
+    REM Copy streamlit_vulkan.py alongside the EXE.
+    REM (Streamlit service is only available in app-gpu.py / start-gpu.bat,
+    REM  not in the compiled EXE. The file is included for reference only.)
     xcopy "%SRC%\streamlit_vulkan.py"            "%SRC%\dist\QwenASR\" /Y /Q
     echo  streamlit_vulkan.py copied to dist\QwenASR\
 
     echo  Launcher : dist\QwenASR\QwenASR.exe
-    echo  Runtime  : dist\QwenASR\_internal\  (includes streamlit via --collect-all)
+    echo  Runtime  : dist\QwenASR\_internal\
     echo  GPU DLLs : dist\QwenASR\chatllm\   (~71 MB, Vulkan backend)
-    echo  WebUI    : dist\QwenASR\streamlit_vulkan.py  (launched by EXE --streamlit-mode)
+    echo  WebUI    : use app-gpu.py (start-gpu.bat) for Streamlit service
     echo.
     echo  Model downloaded at first run from:
     echo    https://huggingface.co/dseditor/Collection/resolve/main/qwen3-asr-1.7b.bin

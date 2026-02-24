@@ -395,25 +395,15 @@ class SettingsTab(ctk.CTkScrollableFrame):
             self._sl_port_var.set("8501")
         self._sl_port = port
 
+        py_exe  = _get_python_exe()
         _NO_WIN = 0x08000000 if sys.platform == "win32" else 0
-        if getattr(_sys, "frozen", False):
-            # 編譯版本：QwenASR.exe 以 --streamlit-mode 啟動，使用 frozen Python
-            # _internal/ 已包含 streamlit（build.bat --collect-all streamlit）
-            cmd = [
-                str(_sys.executable), "--streamlit-mode", str(sl_script),
-                "--server.port",              str(port),
-                "--server.headless",          "true",
-                "--browser.gatherUsageStats", "false",
-            ]
-        else:
-            # 開發模式：使用獨立的 Python 直譯器執行 streamlit
-            py_exe = _get_python_exe()
-            cmd = [
-                str(py_exe), "-m", "streamlit", "run", str(sl_script),
-                "--server.port",              str(port),
-                "--server.headless",          "true",
-                "--browser.gatherUsageStats", "false",
-            ]
+        cmd = [
+            str(py_exe), "-m", "streamlit", "run",
+            str(sl_script),
+            "--server.port",              str(port),
+            "--server.headless",          "true",
+            "--browser.gatherUsageStats", "false",
+        ]
         self._sl_append_log(
             f"▶ 啟動：streamlit run streamlit_vulkan.py --server.port {port}"
         )

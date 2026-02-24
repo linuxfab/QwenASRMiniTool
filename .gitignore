@@ -27,6 +27,7 @@ ov_models/silero_vad*.onnx
 onnx_models/
 GPUModel/
 GGUF/
+ffmpeg/
 *.onnx
 *.bin
 *.xml

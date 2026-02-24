@@ -153,15 +153,21 @@ IF EXIST "%SRC%\dist\QwenASR\QwenASR.exe" (
     )
 
     echo.
-    REM Copy streamlit_vulkan.py alongside the EXE.
-    REM (Streamlit service is only available in app-gpu.py / start-gpu.bat,
-    REM  not in the compiled EXE. The file is included for reference only.)
-    xcopy "%SRC%\streamlit_vulkan.py"            "%SRC%\dist\QwenASR\" /Y /Q
-    echo  streamlit_vulkan.py copied to dist\QwenASR\
+    REM Copy bundled ffmpeg.exe to dist\QwenASR\ffmpeg\
+    REM ffmpeg_utils.find_ffmpeg() searches <exe_dir>/ffmpeg/ffmpeg.exe first
+    REM when running as a frozen EXE (sys.frozen=True).
+    IF EXIST "%SRC%\ffmpeg\ffmpeg.exe" (
+        IF NOT EXIST "%SRC%\dist\QwenASR\ffmpeg\" mkdir "%SRC%\dist\QwenASR\ffmpeg\"
+        xcopy "%SRC%\ffmpeg\ffmpeg.exe" "%SRC%\dist\QwenASR\ffmpeg\" /Y /Q
+        echo  ffmpeg/     : ffmpeg.exe copied to dist\QwenASR\ffmpeg\
+    ) ELSE (
+        echo  WARNING: ffmpeg\ffmpeg.exe not found - users will be prompted to download at runtime
+    )
 
     echo  Launcher : dist\QwenASR\QwenASR.exe
     echo  Runtime  : dist\QwenASR\_internal\
     echo  GPU DLLs : dist\QwenASR\chatllm\   (~71 MB, Vulkan backend)
+    echo  ffmpeg   : dist\QwenASR\ffmpeg\ffmpeg.exe  (video support)
     echo  WebUI    : use app-gpu.py (start-gpu.bat) for Streamlit service
     echo.
     echo  Model downloaded at first run from:

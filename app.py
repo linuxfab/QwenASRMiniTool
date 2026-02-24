@@ -1454,11 +1454,17 @@ class App(ctk.CTk):
     def _get_python_exe(self) -> Path:
         """取得可執行的 Python 解譯器路徑。
         EXE 模式下，PyInstaller bootloader 本身不可做 `python -m`，
-        因此在 BASE_DIR 尋找 python.exe（需由 build.bat 複製進來）。
+        因此在 BASE_DIR/_python/ 尋找 python.exe（由 build.bat 複製進來）。
+
+        python.exe 放在 _python\ 子目錄（非 EXE 所在根目錄）的原因：
+        若 python3XX.dll 與 QwenASR.exe 同層，Windows DLL loader 會同時載入
+        兩份不同 Python DLL（PyInstaller 的 _internal\ 版本 + venv 版本），
+        造成 DLL 衝突與每段辨識時的視窗閃爍問題。
         """
         if getattr(sys, "frozen", False):
             for cand in [
-                BASE_DIR / "python.exe",
+                BASE_DIR / "_python" / "python.exe",   # 新版 build.bat 位置（避免 DLL 衝突）
+                BASE_DIR / "python.exe",               # 舊版相容（build 後手動放置的情況）
                 BASE_DIR / "_internal" / "python.exe",
             ]:
                 if cand.exists():

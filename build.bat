@@ -94,6 +94,7 @@ REM Chinese Windows (cp950 default encoding).
     --hidden-import customtkinter ^
     --hidden-import sounddevice ^
     --hidden-import librosa ^
+    --hidden-import soundfile ^
     --hidden-import kaldi_native_fbank ^
     --hidden-import scipy ^
     --hidden-import scipy.cluster ^
@@ -152,12 +153,15 @@ IF EXIST "%SRC%\dist\QwenASR\QwenASR.exe" (
     xcopy "%SRC%\streamlit_app.py"               "%SRC%\dist\QwenASR\" /Y /Q
     echo  streamlit_app.py copied to dist\QwenASR\
 
-    REM Copy python.exe from build_venv so Streamlit can be launched in EXE mode.
-    REM QwenASR.exe is a PyInstaller bootloader; it cannot run "python -m streamlit".
-    REM A real python.exe is required next to QwenASR.exe.
-    xcopy "%VENV%\Scripts\python.exe"            "%SRC%\dist\QwenASR\" /Y /Q
-    xcopy "%VENV%\Scripts\python3*.dll"          "%SRC%\dist\QwenASR\" /Y /Q 2>NUL
-    echo  python.exe  copied to dist\QwenASR\  (required for Streamlit service)
+    REM Copy python.exe + python3*.dll to _python\ subdirectory (NOT the EXE root).
+    REM Reason: placing python3XX.dll in the same dir as QwenASR.exe causes Windows
+    REM DLL loader to load TWO different copies of the Python DLL (one for QwenASR.exe
+    REM via PyInstaller _internal/, one for python.exe via the root dir), which can
+    REM produce undefined behavior and per-chunk window flashes in windowed mode.
+    REM python.exe finds python3XX.dll in its own directory (_python\), which is correct.
+    xcopy "%VENV%\Scripts\python.exe"            "%SRC%\dist\QwenASR\_python\" /Y /Q
+    xcopy "%VENV%\Scripts\python3*.dll"          "%SRC%\dist\QwenASR\_python\" /Y /Q 2>NUL
+    echo  python.exe  copied to dist\QwenASR\_python\  (required for Streamlit service)
 
     echo  Launcher : dist\QwenASR\QwenASR.exe
     echo  Runtime  : dist\QwenASR\_internal\

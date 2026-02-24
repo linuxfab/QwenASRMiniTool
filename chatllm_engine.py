@@ -40,6 +40,65 @@ else:
 # Windows 旗標：建立子程序時不彈出主控台視窗（防止辨識時畫面閃爍）
 _CREATE_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 
+# STARTUPINFO：額外強制隱藏子程序視窗（搭配 CREATE_NO_WINDOW 雙重保護）
+# CREATE_NO_WINDOW 阻止 console 分配，STARTF_USESHOWWINDOW+SW_HIDE 隱藏主視窗
+_STARTUP_INFO: "subprocess.STARTUPINFO | None" = None
+if sys.platform == "win32":
+    _STARTUP_INFO = subprocess.STARTUPINFO()
+    _STARTUP_INFO.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    _STARTUP_INFO.wShowWindow = 0  # SW_HIDE
+
+
+def _to_path_bytes(path: "str | Path") -> bytes:
+    """路徑轉 bytes，適合傳給 Windows C DLL（ANSI API 相容）。
+
+    Windows C 函式庫的 fopen() / LoadLibrary() 等 ANSI 函式期望系統碼頁
+    （CP936/CP950）編碼的路徑，而 Python 預設 .encode() 是 UTF-8，
+    兩者在中文路徑上不相容。
+
+    解法優先順序：
+      1. GetShortPathNameW → 8.3 短路徑（純 ASCII，任何 C API 都能處理）
+      2. 若 8.3 短路徑仍含非 ASCII → 改用 GetACP() 系統碼頁編碼
+      3. 最後回退 UTF-8
+    """
+    p = str(path)
+    if sys.platform != "win32":
+        return p.encode("utf-8")
+    # 嘗試 GetShortPathNameW 取得 ASCII 8.3 短路徑
+    try:
+        n = ctypes.windll.kernel32.GetShortPathNameW(p, None, 0)
+        if n > 0:
+            buf = ctypes.create_unicode_buffer(n)
+            if ctypes.windll.kernel32.GetShortPathNameW(p, buf, n) > 0:
+                try:
+                    return buf.value.encode("ascii")
+                except UnicodeEncodeError:
+                    p = buf.value   # 短路徑仍有非 ASCII → 繼續往下
+    except Exception:
+        pass
+    # 回退：系統 ANSI 碼頁（C fopen/CreateFileA 期望的編碼）
+    try:
+        cp = ctypes.windll.kernel32.GetACP()
+        return p.encode(f"cp{cp}")
+    except (UnicodeEncodeError, LookupError):
+        return p.encode("utf-8")
+
+
+def _short_path_str(path: "str | Path") -> str:
+    """回傳 8.3 短路徑字串（盡量 ASCII，用於嵌入 DLL 訊息字串中）。"""
+    p = str(path)
+    if sys.platform != "win32":
+        return p
+    try:
+        n = ctypes.windll.kernel32.GetShortPathNameW(p, None, 0)
+        if n > 0:
+            buf = ctypes.create_unicode_buffer(n)
+            if ctypes.windll.kernel32.GetShortPathNameW(p, buf, n) > 0:
+                return buf.value
+    except Exception:
+        pass
+    return p
+
 # 語系名稱 → ISO 639-1 語言代碼（Qwen3-ASR 輸出格式 "language {code}<asr_text>..."）
 _LANG_CODE: dict[str, str] = {
     "Chinese":    "zh",
@@ -91,9 +150,10 @@ def detect_vulkan_devices(chatllm_dir: str | Path) -> list[dict]:
     try:
         result = subprocess.run(
             [str(exe), "--show_devices"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, stdin=subprocess.DEVNULL, text=True, timeout=10,
             cwd=str(chatllm_dir),
             creationflags=_CREATE_NO_WINDOW,
+            startupinfo=_STARTUP_INFO,
         )
         output = result.stdout + result.stderr
         devices: list[dict] = []
@@ -168,9 +228,11 @@ class _ChatLLMRunner:
         r = subprocess.run(
             [str(exe), "-m", str(self._model_path), "-ngl", "0",
              "--hide_banner", "--show"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            capture_output=True, stdin=subprocess.DEVNULL,
+            text=True, encoding="utf-8", errors="replace",
             timeout=30, cwd=str(self._chatllm_dir),
             creationflags=_CREATE_NO_WINDOW,
+            startupinfo=_STARTUP_INFO,
         )
         output = r.stdout + r.stderr
         if "Qwen3-ASR" not in output:
@@ -194,9 +256,11 @@ class _ChatLLMRunner:
         with self._lock:
             r = subprocess.run(
                 cmd,
-                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                capture_output=True, stdin=subprocess.DEVNULL,
+                text=True, encoding="utf-8", errors="replace",
                 timeout=120, cwd=str(self._chatllm_dir),
                 creationflags=_CREATE_NO_WINDOW,
+                startupinfo=_STARTUP_INFO,
             )
         output = r.stdout + r.stderr
 
@@ -229,11 +293,40 @@ class _DLLASRRunner:
         self._chatllm_dir = Path(chatllm_dir).resolve()
         self._lock        = threading.Lock()
 
+        # ── 凍結視窗模式：預配置隱藏主控台（防止 DLL 閃出黑色視窗）────
+        # 問題根源：--windowed PyInstaller EXE 沒有主控台，
+        # libchatllm.dll 的 MSVC C runtime 每次呼叫 chatllm_restart() /
+        # chatllm_user_input() 寫 stderr/stdout 時，發現 handle 無效，
+        # 就會自行呼叫 AllocConsole() 建立主控台視窗（黑色視窗閃爍）。
+        # 解法：在 LoadLibrary 前搶先 AllocConsole() 並立即隱藏，
+        # 讓 DLL C runtime 找到合法 handle，不再自行建立可見視窗。
+        # source 模式（python app.py）從 cmd.exe 繼承主控台，不觸發此問題。
+        if getattr(sys, "frozen", False) and sys.platform == "win32":
+            _k32 = ctypes.windll.kernel32
+            _u32 = ctypes.windll.user32
+            if not _k32.GetConsoleWindow():          # 目前無主控台
+                if _k32.AllocConsole():              # 分配一個
+                    _hwnd = _k32.GetConsoleWindow()
+                    if _hwnd:
+                        _u32.ShowWindow(_hwnd, 0)    # SW_HIDE：立即隱藏
+
         dll_path = self._chatllm_dir / "libchatllm.dll"
         if not dll_path.exists():
             raise FileNotFoundError(f"libchatllm.dll 不存在：{dll_path}")
 
-        os.add_dll_directory(str(self._chatllm_dir))
+        # ── DLL 相依解析修復（PyInstaller EXE 關鍵）──────────────
+        # libchatllm.dll 內部用 plain LoadLibrary("ggml-vulkan.dll")
+        # （不帶 LOAD_LIBRARY_SEARCH_* 旗標），走傳統 DLL 搜尋順序：
+        #   模組目錄 → CWD → System32 → PATH
+        # AddDllDirectory()（os.add_dll_directory）只影響有旗標的 LoadLibraryEx，
+        # 對傳統搜尋無效。EXE 的 CWD ≠ chatllm/，PATH 也不含 chatllm/，
+        # 所以 ggml-vulkan.dll 等找不到 → DLL 初始化失敗 → fallback subprocess。
+        # 解法：暫時把 chatllm_dir 插到 PATH 最前面，chatllm_start() 後還原。
+        _saved_path = os.environ.get("PATH", "")
+        _chatllm_dir_str = str(self._chatllm_dir)
+        os.environ["PATH"] = _chatllm_dir_str + os.pathsep + _saved_path
+
+        os.add_dll_directory(_chatllm_dir_str)
         lib = ctypes.windll.LoadLibrary(str(dll_path))
 
         # ── 函式原型 ─────────────────────────────────────────────
@@ -260,8 +353,10 @@ class _DLLASRRunner:
         self._ENDFUNC   = ENDFUNC
 
         # ── chatllm 全域初始化（--ggml_dir 告知後端 DLL 位置）────
+        # 必須用 ANSI/ASCII 相容的路徑；DLL 的 C 函式庫用 ANSI fopen/LoadLibrary，
+        # 若傳 UTF-8 中文路徑會找不到 ggml-*.dll，使用 _to_path_bytes() 解決此問題。
         lib.chatllm_append_init_param(b"--ggml_dir")
-        lib.chatllm_append_init_param(str(self._chatllm_dir).encode())
+        lib.chatllm_append_init_param(_to_path_bytes(self._chatllm_dir))
         r = lib.chatllm_init()
         if r != 0:
             raise RuntimeError(f"chatllm_init() failed: {r}")
@@ -275,13 +370,15 @@ class _DLLASRRunner:
         # ── 模型參數：必須加 --multimedia_file_tags {{ }} ─────────
         # 若缺少此參數，chat->history 的 mm_opening/closing 為空字串，
         # Content::push_back() 會把 {{audio:path}} 當純文字儲存，不做音訊解析。
+        # 模型路徑同樣需要 ANSI/ASCII 相容編碼（GetShortPathNameW）。
         gpu_arg = "all" if n_gpu_layers > 0 else "0"
-        for p in [
-            "-m", str(Path(model_path).resolve()),
-            "-ngl", gpu_arg,
-            "--multimedia_file_tags", "{{", "}}",
+        model_path_bytes = _to_path_bytes(Path(model_path).resolve())
+        for p_b in [
+            b"-m", model_path_bytes,
+            b"-ngl", gpu_arg.encode(),
+            b"--multimedia_file_tags", b"{{", b"}}",
         ]:
-            lib.chatllm_append_param(chat, p.encode())
+            lib.chatllm_append_param(chat, p_b)
 
         # ── 回呼（必須存為 instance attribute 防止 GC 回收）────────
         self._chunks: list[str] = []
@@ -306,14 +403,25 @@ class _DLLASRRunner:
         if cb:
             cb("載入 chatllm 模型（Vulkan GPU，-ngl all）…")
         r = lib.chatllm_start(chat, on_print, on_end, ctypes.c_void_p(0))
+        # chatllm_start() 後 DLL 已完全初始化，相依 DLL 也已載入記憶體，可還原 PATH
+        os.environ["PATH"] = _saved_path
         if r != 0:
             raise RuntimeError(f"chatllm_start() failed: {r}")
 
     def transcribe(self, wav_path: str, sys_prompt: str | None = None) -> str:
         """送入 WAV 路徑（絕對路徑），回傳轉錄文字。"""
-        # 使用正斜線路徑（反斜線在某些系統上可能有問題）
-        fwd = str(Path(wav_path).resolve()).replace("\\", "/")
-        msg = "{{{{audio:{}}}}}".format(fwd).encode("utf-8")
+        # 取得 8.3 短路徑（ASCII），避免中文路徑無法被 DLL 的 C fopen 開啟
+        # 例：C:\Users\陳小明\AppData\Local\Temp\xxx.wav
+        #   → C:\Users\CHEN~1\AppData\Local\Temp\xxx.wav（純 ASCII）
+        safe_path = _short_path_str(str(Path(wav_path).resolve()))
+        fwd = safe_path.replace("\\", "/")
+        # 若 _short_path_str 仍有非 ASCII（8.3 名稱停用），改用 ANSI 碼頁
+        try:
+            path_b = fwd.encode("ascii")
+        except UnicodeEncodeError:
+            cp = ctypes.windll.kernel32.GetACP() if sys.platform == "win32" else 65001
+            path_b = fwd.encode(f"cp{cp}", errors="replace")
+        msg = b"{{audio:" + path_b + b"}}"
         sys_bytes = sys_prompt.encode("utf-8") if sys_prompt else None
 
         with self._lock:

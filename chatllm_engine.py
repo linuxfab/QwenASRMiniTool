@@ -23,6 +23,10 @@ from pathlib import Path
 
 import numpy as np
 
+# ── 輸出語系旗標（由 app.py / app-gpu.py 切換時同步設定）──────────────
+# True = 直接輸出模型原始簡體；False = 經 OpenCC s2twp 轉為繁體
+_output_simplified: bool = False
+
 # ── 共用常數（與 app.py 保持同步）─────────────────────────────────────
 SAMPLE_RATE   = 16000
 VAD_CHUNK     = 512
@@ -139,9 +143,21 @@ SRT_DIR = BASE_DIR / "subtitles"
 # ══════════════════════════════════════════════════════
 
 def detect_vulkan_devices(chatllm_dir: str | Path) -> list[dict]:
-    """執行 main.exe --show_devices，解析 Vulkan GPU 清單。
+    """執行 main.exe --show_devices，解析所有非 CPU 的計算裝置。
 
-    回傳: [{'id': 0, 'name': 'NVIDIA RTX 5090', 'vram_free': 32944160768}, ...]
+    輸出格式（每裝置兩行）：
+      0: Vulkan - VulkanO (AMD Radeon(TM) Graphics)
+         type: ACCEL
+         memory free: 7957908736 B
+      1: CPU - CPU (AMD Ryzen 5 9600X 6-Core Processor)
+         type: CPU
+
+    判斷邏輯：
+      - 行首 backend 欄位（Vulkan/CPU 等）決定裝置類型
+      - backend == "CPU" → 跳過；其餘（Vulkan, Metal, CUDA…）均列出
+      - 不依賴 type: 行，避免 NVIDIA/AMD/Intel 格式差異
+
+    回傳: [{'id': 0, 'name': 'AMD Radeon(TM) Graphics', 'vram_free': 7957908736}, ...]
     失敗時回傳空清單。
     """
     exe = Path(chatllm_dir) / "main.exe"
@@ -156,38 +172,30 @@ def detect_vulkan_devices(chatllm_dir: str | Path) -> list[dict]:
             startupinfo=_STARTUP_INFO,
         )
         output = result.stdout + result.stderr
-        devices: list[dict] = []
-        current: dict = {}
+        pending: list[dict] = []   # 尚未確認 vram_free 的裝置
+        current: dict | None = None
 
         for line in output.splitlines():
-            m = re.match(r"\s*(\d+):\s*\S+\s*-\s*\S+\s*\((.+)\)", line)
+            # 裝置標頭行：「0: Vulkan - VulkanO (AMD Radeon(TM) Graphics)」
+            m = re.match(r"\s*(\d+):\s*(\S+)\s+-\s+\S+\s+\((.+)\)", line)
             if m:
-                if current and current.get("is_gpu"):
-                    devices.append({
-                        "id":        current["id"],
-                        "name":      current["name"],
-                        "vram_free": current.get("vram_free", 0),
-                    })
+                backend = m.group(2).upper()   # "VULKAN", "CPU", "METAL" …
                 current = {
-                    "id":     int(m.group(1)),
-                    "name":   m.group(2).strip(),
-                    "is_gpu": False,
+                    "id":        int(m.group(1)),
+                    "name":      m.group(3).strip(),
+                    "vram_free": 0,
+                    "_skip":     backend == "CPU",   # 只排除純 CPU 裝置
                 }
-            elif "type: GPU" in line and current:
-                current["is_gpu"] = True
-            elif "memory free" in line and current:
+                pending.append(current)
+            elif "memory free" in line and current is not None:
                 mf = re.search(r"(\d+)\s*B", line)
                 if mf:
                     current["vram_free"] = int(mf.group(1))
 
-        if current and current.get("is_gpu"):
-            devices.append({
-                "id":        current["id"],
-                "name":      current["name"],
-                "vram_free": current.get("vram_free", 0),
-            })
-
-        return devices
+        return [
+            {"id": d["id"], "name": d["name"], "vram_free": d["vram_free"]}
+            for d in pending if not d["_skip"]
+        ]
     except Exception:
         return []
 
@@ -212,10 +220,12 @@ class _ChatLLMRunner:
         model_path:   str | Path,
         chatllm_dir:  str | Path,
         n_gpu_layers: int = 99,
+        device_id:    int = 0,
     ):
         self._model_path   = Path(model_path).resolve()   # 必須解析為絕對路徑
         self._chatllm_dir  = Path(chatllm_dir).resolve()
         self._n_gpu_layers = n_gpu_layers
+        self._device_id    = device_id
         self._lock         = threading.Lock()
 
         exe = self._chatllm_dir / "main.exe"
@@ -264,10 +274,15 @@ class _ChatLLMRunner:
             )
         output = r.stdout + r.stderr
 
-        # 解析 language {lang}<asr_text>{text}
-        if "<asr_text>" in output:
-            return output.split("<asr_text>", 1)[1].strip()
-        return output.strip()
+        # 正常輸出必含 <asr_text>；若缺失代表裝置錯誤，立即中止，不回傳垃圾字幕
+        if "<asr_text>" not in output:
+            preview = output.strip()[:300] or "(無輸出)"
+            raise RuntimeError(
+                f"GPU 推理失敗，未取得語音輸出。\n"
+                f"可能原因：裝置不相容、模型錯誤或記憶體不足。\n"
+                f"chatllm 輸出：{preview}"
+            )
+        return output.split("<asr_text>", 1)[1].strip()
 
 
 # ══════════════════════════════════════════════════════
@@ -288,6 +303,7 @@ class _DLLASRRunner:
         model_path:   str | Path,
         chatllm_dir:  str | Path,
         n_gpu_layers: int = 99,
+        device_id:    int = 0,
         cb=None,
     ):
         self._chatllm_dir = Path(chatllm_dir).resolve()
@@ -440,9 +456,14 @@ class _DLLASRRunner:
             raise RuntimeError(f"DLL 錯誤：{self._error}")
 
         full = "".join(self._chunks)
-        if "<asr_text>" in full:
-            return full.split("<asr_text>", 1)[1].strip()
-        return full.strip()
+        if "<asr_text>" not in full:
+            preview = full.strip()[:300] or "(無輸出)"
+            raise RuntimeError(
+                f"GPU 推理失敗，未取得語音輸出。\n"
+                f"可能原因：裝置不相容、模型錯誤或記憶體不足。\n"
+                f"DLL 輸出：{preview}"
+            )
+        return full.split("<asr_text>", 1)[1].strip()
 
 
 # ══════════════════════════════════════════════════════
@@ -584,6 +605,7 @@ class ChatLLMASREngine:
         model_path:   str | Path,
         chatllm_dir:  str | Path,
         n_gpu_layers: int = 99,
+        device_id:    int = 0,
         cb=None,
     ):
         """從背景執行緒呼叫。cb(msg) 更新 UI 狀態。"""
@@ -649,6 +671,7 @@ class ChatLLMASREngine:
                     model_path   = model_path,
                     chatllm_dir  = chatllm_dir,
                     n_gpu_layers = n_gpu_layers,
+                    device_id    = device_id,
                     cb           = cb,
                 )
                 self._use_dll = True
@@ -663,6 +686,7 @@ class ChatLLMASREngine:
             model_path   = model_path,
             chatllm_dir  = chatllm_dir,
             n_gpu_layers = n_gpu_layers,
+            device_id    = device_id,
         )
         self._use_dll = False
         self.ready = True
@@ -705,8 +729,8 @@ class ChatLLMASREngine:
             except OSError:
                 pass
 
-        # OpenCC 簡→繁轉換（模型預設輸出簡體中文）
-        if self.cc and text:
+        # OpenCC 簡→繁轉換（模型預設輸出簡體中文；簡體模式則跳過）
+        if self.cc and text and not _output_simplified:
             text = self.cc.convert(text)
 
         return text

@@ -11,10 +11,36 @@
 from __future__ import annotations
 
 import hashlib
+import ssl
 import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
+
+
+def _ssl_ctx() -> ssl.SSLContext:
+    """建立 SSL Context，優先序：certifi bundle → 系統預設 → 不驗證（fallback）。
+
+    PyInstaller EXE 中 Python 的 CA bundle 路徑常失效，
+    certifi 套件自帶 Mozilla cacert.pem，是最可靠的修法。
+    若兩者都不可用，才退回「不驗證」模式（只用於可信任的 HuggingFace URL）。
+    """
+    # 優先：certifi 套件的 CA bundle
+    try:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        pass
+    # 次選：系統預設（開發環境通常正常）
+    try:
+        return ssl.create_default_context()
+    except Exception:
+        pass
+    # 最後降級：不驗證（frozen EXE CA bundle 完全缺失時）
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.check_hostname = False
+    ctx.verify_mode    = ssl.CERT_NONE
+    return ctx
 
 # ── 路徑（PyInstaller 凍結時指向 EXE 旁邊）────────────────────────────
 import sys as _sys
@@ -289,7 +315,7 @@ def _download_file(url: str, dest: Path, progress_cb=None):
         req.add_header("Range", f"bytes={existing}-")
 
     try:
-        resp = urllib.request.urlopen(req, timeout=30)
+        resp = urllib.request.urlopen(req, timeout=30, context=_ssl_ctx())
     except urllib.error.HTTPError as e:
         if e.code == 416:
             # 416 Range Not Satisfiable = 檔案已完整，直接視為成功

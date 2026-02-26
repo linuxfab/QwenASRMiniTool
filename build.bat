@@ -86,6 +86,8 @@ REM Chinese Windows (cp950 default encoding).
     --add-data "%SRC%\ov_models\mel_filters.npy;ov_models" ^
     --add-data "%SRC%\ov_models\silero_vad_v4.onnx;ov_models" ^
     --runtime-hook "%SRC%\runtime_hook_utf8.py" ^
+    --collect-data certifi ^
+    --hidden-import certifi ^
     --collect-all tokenizers ^
     --hidden-import openvino ^
     --hidden-import openvino.runtime ^

@@ -14,4 +14,19 @@
 # to affect the C-level getpreferredencoding() result. PyInstaller runtime
 # hooks run early enough for this to take effect.
 import os
+import sys
+
 os.environ["PYTHONUTF8"] = "1"
+
+# ── SSL CA 憑證修復（PyInstaller EXE 特有）─────────────────────────────
+# 問題：凍結 EXE 中 Python ssl 模組找不到 CA bundle，導致 HTTPS 下載時
+#       拋出 SSLCertVerificationError，但 HTTP 完全正常。
+# 修法：嘗試用 certifi 的 cacert.pem，若無則指向 Windows 系統憑證庫
+if getattr(sys, "frozen", False):
+    try:
+        import certifi
+        ca = certifi.where()
+        os.environ.setdefault("SSL_CERT_FILE",    ca)
+        os.environ.setdefault("REQUESTS_CA_BUNDLE", ca)
+    except ImportError:
+        pass   # certifi 未安裝時靠 _download_file 的 fallback 處理

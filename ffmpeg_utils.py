@@ -254,8 +254,16 @@ class FFmpegDownloadDialog(ctk.CTkToplevel):
             self.after(200, self._poll)
 
     def _download_thread(self, dest_dir: Path):
-        import urllib.request
         import io
+        import ssl
+        import urllib.request
+
+        def _ssl_ctx():
+            try:
+                import certifi
+                return ssl.create_default_context(cafile=certifi.where())
+            except Exception:
+                return ssl.create_default_context()
 
         dest_dir.mkdir(parents=True, exist_ok=True)
         ffmpeg_exe = dest_dir / "ffmpeg.exe"
@@ -263,7 +271,7 @@ class FFmpegDownloadDialog(ctk.CTkToplevel):
 
         self._q.put(("status", "正在下載 ZIP…"))
         try:
-            with urllib.request.urlopen(_FFMPEG_URL, timeout=60) as resp:
+            with urllib.request.urlopen(_FFMPEG_URL, timeout=60, context=_ssl_ctx()) as resp:
                 total = int(resp.headers.get("Content-Length", 0))
                 total_mb = total / 1024 / 1024
                 downloaded = 0

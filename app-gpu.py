@@ -243,24 +243,27 @@ def _find_vad_model() -> Path | None:
     return None
 
 
+
 def _ts_to_subtitle_lines(
     ts_list,
+    raw_text: str,
     chunk_offset: float,
     spk: str | None,
     cc,
     simplified: bool,
 ) -> list[tuple[float, float, str, str | None]]:
-    """ForcedAligner 字元/詞 時間戳記 → 字幕行。
+    """ForcedAligner 逐字 token + ASR 原文（含標點）→ 字幕行。
 
-    分行優先順序（兩層）：
-    1. 標點符號優先：，。？！；：…—、. ! ? ; 出現時立即切行，
-       標點本身不加入輸出（隱藏標點，字幕顯示乾淨文字）。
-    2. 字元上限 MAX_CHARS：無標點時的保護性強制切行，
-       英文 token（ForcedAligner 回傳整個單字）不拆斷。
+    ForcedAligner.align() 回傳的 token 序列不含標點，但字元數與
+    ASR 原文去除標點後完全對應。本函式以 raw_text 為藍本遍歷：
+      - 遇到標點 → 在此切行（標點隱藏，不輸出至字幕）
+      - 遇到一般字元 → 取下一個 token 的時間軸
+      - 無標點時字元超過 MAX_CHARS → 保護性強制切行
 
     Args:
-        ts_list:      Qwen3ForcedAligner.align() 回傳的 TimeStamp 物件列表，
+        ts_list:      Qwen3ForcedAligner.align() 回傳的 ForcedAlignItem 列表，
                       每個物件有 .text / .start_time / .end_time（秒，相對 chunk）。
+        raw_text:     ASR 原始輸出文字（簡體，含標點符號）。
         chunk_offset: 此 chunk 在整段音訊的絕對起始秒數。
         spk:          說話者標籤（可為 None）。
         cc:           OpenCC 轉換器（簡→繁）；simplified=True 時不使用。
@@ -268,79 +271,57 @@ def _ts_to_subtitle_lines(
     """
     _all_punct = _ZH_CLAUSE_END | _EN_SENT_END
     result: list[tuple[float, float, str, str | None]] = []
-    # buf 只存「非標點」的 token，標點 token 僅用於觸發切行
-    buf: list = []
-    char_count = 0
-    # 記錄最後一個標點 token 的 end_time，作為切行結束時間
-    _last_punct_end: float | None = None
 
-    def _flush(force_end: float | None = None):
-        """將 buf 合併為一行字幕，清空 buf。
-        force_end: 若標點 token 觸發切行，傳入標點的 end_time 作為字幕結束時間。
-        """
-        nonlocal char_count, _last_punct_end
-        if not buf:
-            char_count = 0
-            _last_punct_end = None
+    # ── 以 raw_text 掃描，配對 token ──────────────────────────────────────
+    # 段落緩衝：(token_index_start, token_index_end_exclusive)
+    # 每個 token 對應 raw_text 中一個非標點字元（一一對應）
+    token_idx = 0          # 目前消耗到的 token 索引
+    seg_tokens: list = []  # 目前段落收集的 token 列表
+    seg_char_count = 0     # 目前段落字元計數（保護用）
+
+    def _emit_segment(end_override: float | None = None):
+        """將 seg_tokens 轉為一條字幕，加入 result。"""
+        nonlocal seg_tokens, seg_char_count
+        if not seg_tokens:
             return
-        start = chunk_offset + buf[0].start_time
-        # 結束時間優先用傳入的 force_end（即標點 token 的 end_time）
-        end = chunk_offset + (force_end if force_end is not None
-                              else buf[-1].end_time)
-        text = "".join(t.text for t in buf)
-        # OpenCC 繁化在整行合併後處理，確保詞組完整轉換
+        start = chunk_offset + seg_tokens[0].start_time
+        end   = chunk_offset + (end_override if end_override is not None
+                                else seg_tokens[-1].end_time)
+        text  = "".join(t.text for t in seg_tokens)
         if not simplified and cc is not None:
             text = cc.convert(text)
         if end > start and text.strip():
             result.append((start, end, text.strip(), spk))
-        buf.clear()
-        char_count = 0
-        _last_punct_end = None
+        seg_tokens     = []
+        seg_char_count = 0
 
-    for ts in ts_list:
-        ts_text = ts.text or ""
-
-        # ── 標點優先：標點 token 不入 buf，直接觸發切行 ──────────────
-        # 判斷 token 文字去除空白後是否為純標點
-        stripped = ts_text.strip()
-        if stripped and all(c in _all_punct for c in stripped):
-            # 以標點的 end_time 作為前一段字幕的結束時間
-            _flush(force_end=ts.end_time)
+    for ch in raw_text:
+        if ch in _all_punct:
+            # 標點：結束當前段落（以最後一個已消耗 token 的 end_time 為結束）
+            _emit_segment()
             continue
 
-        ts_len = len(ts_text) if ts_text else 1
+        # 非標點：取對應的 token
+        if token_idx >= len(ts_list):
+            # token 已耗盡（理論上不應發生，保護性處理）
+            break
 
-        # ── 字元上限保護（無標點時）：英文 token 整字不切斷 ──────────
-        if buf and char_count + ts_len > MAX_CHARS:
-            _flush()
+        ts = ts_list[token_idx]
+        token_idx += 1
 
-        buf.append(ts)
-        char_count += ts_len
+        # 字元上限保護（無標點長句時確保不超過 MAX_CHARS）
+        if seg_tokens and seg_char_count + len(ts.text or "") > MAX_CHARS:
+            _emit_segment()
 
-        # ── 同一 token 中含有結尾標點（如中文「你好，」整字回傳）──────
-        # 兼容 ForcedAligner 有時將字符與標點合在同一 token 的情況
-        if stripped and stripped[-1] in _all_punct:
-            # 移除尾部標點後再存入 buf
-            clean_text = stripped.rstrip("".join(_all_punct))
-            if clean_text:
-                # 以替換方式更新剛加入的 token 文字（用 SimpleNamespace 替代）
-                patched = types.SimpleNamespace(
-                    text=clean_text,
-                    start_time=buf[-1].start_time,
-                    end_time=buf[-1].end_time,
-                )
-                buf[-1] = patched
-                char_count = sum(len(t.text or "") for t in buf)
-            else:
-                # token 文字全為標點，從 buf 移除並觸發切行
-                buf.pop()
-            _flush(force_end=ts.end_time)
+        seg_tokens.append(ts)
+        seg_char_count += len(ts.text or "")
 
-    _flush()
+    # 處理剩餘未切行的 token
+    _emit_segment()
     return result
 
-
 # 全域：是否輸出簡體中文（True = 跳過 OpenCC 繁化）
+
 _g_output_simplified: bool = False
 
 # ══════════════════════════════════════════════════════
@@ -524,7 +505,8 @@ class GPUASREngine:
                     ts_list = align_results[0] if align_results else []
                     if ts_list:
                         subs = _ts_to_subtitle_lines(
-                            ts_list, g0, spk, self.cc, _g_output_simplified
+                            ts_list, raw_text, g0, spk,
+                            self.cc, _g_output_simplified
                         )
                         if subs:
                             all_subs.extend(subs)

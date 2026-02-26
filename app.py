@@ -143,10 +143,10 @@ def _detect_speech_groups(audio: np.ndarray, vad_sess, max_group_sec: int = MAX_
 def _split_to_lines(text: str) -> list[str]:
     """以標點符號切分短句，移除標點，每句獨立成行。
 
-    要點：
-    1. 中文/日文標點符號 → 立即切行（標點不保留）
-    2. 英文以空格分詞（整字為最小單位），超限則换行
-    3. 字元數超限 MAX_CHARS 時強制換行（中文/日文保護）
+    斷句規則（英文/中文統一）：
+    1. 所有標點（,.!?;: 及中文，。？！；：…—）→ 立即切行，標點不輸出
+    2. 英文整字為最小單位，詞前補空格（詞界）
+    3. MAX_CHARS 保護：超限才強制換行
     """
     if "<asr_text>" in text:
         text = text.split("<asr_text>", 1)[1]
@@ -154,16 +154,16 @@ def _split_to_lines(text: str) -> list[str]:
     if not text:
         return []
 
-    PUNCT = set("。！？，、；：…—、.,!?;:")
+    # 中文、英文標點統一觸發切行（含英文逗號）
+    PUNCT = frozenset('，。？！；：…—、.,!?;:')
     lines: list[str] = []
     buf   = ""
 
-    # 按空格分詞（英文），保留間隔; 中文進行逗字扐游訪
     i = 0
     while i < len(text):
         ch = text[i]
 
-        # ── 標點符號：立即切行，標點不加入輸出 ──────────────────
+        # ── 標點符號：切行，標點不加入輸出（隱藏）────────────────────
         if ch in PUNCT:
             if buf.strip():
                 lines.append(buf.strip())
@@ -171,13 +171,12 @@ def _split_to_lines(text: str) -> list[str]:
             i += 1
             continue
 
-        # ── 英文单字：整詞收集，不在字母中間切斷 ──────────────
+        # ── 英文單字：整字收集，詞前補空格（詞界）────────────────────
         if ch.isalpha() and ord(ch) < 128:
             j = i
             while j < len(text) and text[j].isalpha() and ord(text[j]) < 128:
                 j += 1
             word = text[i:j]
-            # 英文詞丫加空格 (buf 非空且未以空格結尾)
             prefix = " " if buf and not buf.endswith(" ") else ""
             if len(buf) + len(prefix) + len(word) > MAX_CHARS and buf.strip():
                 lines.append(buf.strip())
@@ -187,18 +186,17 @@ def _split_to_lines(text: str) -> list[str]:
             i = j
             continue
 
-        # ── 空格：部分情況擴展為換行點 ─────────────────────
+        # ── 空格：保留分詞間距 ────────────────────────────────────────
         if ch == " ":
-            # 英文已在上過處理 prefix，這裡只處理字元間空格 / 段尾空格
-            if buf and len(buf) >= MAX_CHARS:
+            if buf and not buf.endswith(" "):
+                buf += " "
+            i += 1
+            if len(buf.rstrip()) >= MAX_CHARS:
                 lines.append(buf.strip())
                 buf = ""
-            elif buf and not buf.endswith(" "):
-                buf += " "   # 保留单一分詞空格
-            i += 1
             continue
 
-        # ── 中文/日文字元：逗字加入 ────────────────────────
+        # ── 中文/日文/數字等：逐字累積 ────────────────────────────────
         buf += ch
         i += 1
         if len(buf) >= MAX_CHARS:

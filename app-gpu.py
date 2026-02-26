@@ -84,10 +84,10 @@ RT_SILENCE_CHUNKS    = 25
 RT_MAX_BUFFER_CHUNKS = 600
 
 # ── 斷句標點集合 ──────────────────────────────────────────
-# 中文子句結束標點（保留於行末後切行）
+# 中文子句結束標點（不保留，切行後隱藏）
 _ZH_CLAUSE_END = frozenset('，。？！；：…—、·')
-# 英文句子結束標點
-_EN_SENT_END   = frozenset('.!?;')
+# 英文子句結束標點（含逗號，讓英文逗號也觸發切行）
+_EN_SENT_END   = frozenset('.,!?;')
 
 
 # ══════════════════════════════════════════════════════
@@ -154,15 +154,15 @@ def _detect_speech_groups(audio: np.ndarray, vad_sess) -> list[tuple[float, floa
 def _split_to_lines(text: str) -> list[str]:
     """語意優先斷句（ForcedAligner 不可用時的 fallback）。
 
-    優先順序：
-    1. 標點符號優先切行（標點不保留，從字幕輸出中隱藏）
-    2. 字元數超過 MAX_CHARS 時強制切割（無標點時的保護）
-    3. 英文單字不切斷（整個 word 為最小單位）
+    斷句規則（英文/中文統一）：
+    1. 所有標點（,.!?; 及中文，。？！）→ 立即切行，標點不輸出
+    2. 英文整字為最小單位，詞間保留空格
+    3. MAX_CHARS 保護：超限才強制換行
     """
     if not text:
         return []
 
-    _all_punct = _ZH_CLAUSE_END | _EN_SENT_END
+    _all_punct = _ZH_CLAUSE_END | _EN_SENT_END  # 含逗號
     lines: list[str] = []
     buf = ""
 
@@ -170,7 +170,7 @@ def _split_to_lines(text: str) -> list[str]:
     while i < len(text):
         ch = text[i]
 
-        # ── 標點符號：立即切行，標點不加入輸出（隱藏標點）────────────
+        # ── 標點符號：切行，標點不加入輸出（隱藏）────────────────────
         if ch in _all_punct:
             if buf.strip():
                 lines.append(buf.strip())
@@ -178,24 +178,35 @@ def _split_to_lines(text: str) -> list[str]:
             i += 1
             continue
 
-        # ── 英文單字：整字收集，不在字母中間切斷 ──────────────────
+        # ── 英文單字：整字收集，詞前補空格（詞界）────────────────────
         if ch.isalpha() and ord(ch) < 128:
             j = i
             while j < len(text) and text[j].isalpha() and ord(text[j]) < 128:
                 j += 1
             word = text[i:j]
-            # 加入後超過上限 → 先把當前 buf 存起來，再開新行
-            if len(buf) + len(word) > MAX_CHARS and buf.strip():
+            # buf 非空且未以空格結尾 → 補一個分詞空格
+            prefix = " " if buf and not buf.endswith(" ") else ""
+            if len(buf) + len(prefix) + len(word) > MAX_CHARS and buf.strip():
                 lines.append(buf.strip())
-                buf = ""
-            buf += word
+                buf = word
+            else:
+                buf += prefix + word
             i = j
             continue
 
+        # ── 空格：只在 buf 有內容且未以空格結尾時記錄 ────────────────
+        if ch == " ":
+            if buf and not buf.endswith(" "):
+                buf += " "
+            i += 1
+            if len(buf.rstrip()) >= MAX_CHARS:
+                lines.append(buf.strip())
+                buf = ""
+            continue
+
+        # ── 中文/日文/數字等：逐字累積 ────────────────────────────────
         buf += ch
         i += 1
-
-        # ── 字元數上限（無標點時的保護，不截斷英文單字）────────────
         if len(buf) >= MAX_CHARS:
             lines.append(buf.strip())
             buf = ""
@@ -203,6 +214,7 @@ def _split_to_lines(text: str) -> list[str]:
     if buf.strip():
         lines.append(buf.strip())
     return [l for l in lines if l.strip()]
+
 
 
 def _srt_ts(s: float) -> str:
@@ -254,71 +266,89 @@ def _ts_to_subtitle_lines(
 ) -> list[tuple[float, float, str, str | None]]:
     """ForcedAligner 逐字 token + ASR 原文（含標點）→ 字幕行。
 
-    ForcedAligner.align() 回傳的 token 序列不含標點，但字元數與
-    ASR 原文去除標點後完全對應。本函式以 raw_text 為藍本遍歷：
-      - 遇到標點 → 在此切行（標點隱藏，不輸出至字幕）
-      - 遇到一般字元 → 取下一個 token 的時間軸
-      - 無標點時字元超過 MAX_CHARS → 保護性強制切行
-
-    Args:
-        ts_list:      Qwen3ForcedAligner.align() 回傳的 ForcedAlignItem 列表，
-                      每個物件有 .text / .start_time / .end_time（秒，相對 chunk）。
-        raw_text:     ASR 原始輸出文字（簡體，含標點符號）。
-        chunk_offset: 此 chunk 在整段音訊的絕對起始秒數。
-        spk:          說話者標籤（可為 None）。
-        cc:           OpenCC 轉換器（簡→繁）；simplified=True 時不使用。
-        simplified:   True = 跳過 OpenCC，直接輸出簡體。
+    ForcedAligner token 是單字元（含英文字母），直接 join 會黏字
+    （如 Deepwithinthe）。本函式以 raw_text 為藍本：
+      - 標點 → 切行（含英文逗號）
+      - 空格 → 記錄詞界但不消耗 token
+      - 一般字元 → 消耗一個 token，記錄到緩衝
+    輸出時以 _rebuild_text_with_spaces() 重建含空格的正確文字。
     """
-    _all_punct = _ZH_CLAUSE_END | _EN_SENT_END
+    # 英文逗號也觸發切行（中文逗號已在 _ZH_CLAUSE_END）
+    _all_punct = _ZH_CLAUSE_END | _EN_SENT_END  # 含 ,
     result: list[tuple[float, float, str, str | None]] = []
 
-    # ── 以 raw_text 掃描，配對 token ──────────────────────────────────────
-    # 段落緩衝：(token_index_start, token_index_end_exclusive)
-    # 每個 token 對應 raw_text 中一個非標點字元（一一對應）
-    token_idx = 0          # 目前消耗到的 token 索引
-    seg_tokens: list = []  # 目前段落收集的 token 列表
-    seg_char_count = 0     # 目前段落字元計數（保護用）
+    token_idx      = 0
+    seg_tokens: list = []
+    seg_raw_chars: list[str] = []   # 每個非標點字元（含空格）
+    seg_char_count = 0
 
     def _emit_segment(end_override: float | None = None):
-        """將 seg_tokens 轉為一條字幕，加入 result。"""
-        nonlocal seg_tokens, seg_char_count
+        """將 seg_tokens/seg_raw_chars 轉為一條字幕，加入 result。"""
+        nonlocal seg_tokens, seg_raw_chars, seg_char_count
         if not seg_tokens:
             return
         start = chunk_offset + seg_tokens[0].start_time
         end   = chunk_offset + (end_override if end_override is not None
                                 else seg_tokens[-1].end_time)
-        text  = "".join(t.text for t in seg_tokens)
+        # 以 raw_text 字元序列（含空格）重建可讀文字
+        text = _rebuild_text_with_spaces(seg_raw_chars)
         if not simplified and cc is not None:
             text = cc.convert(text)
         if end > start and text.strip():
             result.append((start, end, text.strip(), spk))
-        seg_tokens     = []
+        seg_tokens    = []
+        seg_raw_chars = []
         seg_char_count = 0
 
     for ch in raw_text:
         if ch in _all_punct:
-            # 標點：結束當前段落（以最後一個已消耗 token 的 end_time 為結束）
             _emit_segment()
             continue
 
-        # 非標點：取對應的 token
+        # 空格：記錄詞界，不消耗 token
+        if ch == " ":
+            if seg_raw_chars:   # 有內容時才記錄空格
+                seg_raw_chars.append(" ")
+            continue
+
+        # 一般字元（非標點非空格）：消耗一個 token
         if token_idx >= len(ts_list):
-            # token 已耗盡（理論上不應發生，保護性處理）
-            break
+            break   # token 已耗盡（保護性退出）
 
         ts = ts_list[token_idx]
         token_idx += 1
 
-        # 字元上限保護（無標點長句時確保不超過 MAX_CHARS）
-        if seg_tokens and seg_char_count + len(ts.text or "") > MAX_CHARS:
+        # MAX_CHARS 保護（無標點長句）
+        if seg_tokens and seg_char_count + 1 > MAX_CHARS:
             _emit_segment()
 
         seg_tokens.append(ts)
-        seg_char_count += len(ts.text or "")
+        seg_raw_chars.append(ch)
+        seg_char_count += 1
 
-    # 處理剩餘未切行的 token
     _emit_segment()
     return result
+
+
+def _rebuild_text_with_spaces(raw_chars: list[str]) -> str:
+    """以 raw_text 的字元序列（含空格）重建可讀字幕文字。
+
+    規則：
+    - 英文字母之間保留空格（詞界）
+    - 中文/日文字元之間不加空格
+    - 連續空格折疊為一個
+    - 頭尾去空格
+    """
+    result: list[str] = []
+    for ch in raw_chars:
+        if ch == " ":
+            # 僅在有內容且上一字元不是空格時加入
+            if result and result[-1] != " ":
+                result.append(" ")
+        else:
+            result.append(ch)
+    return "".join(result).strip()
+
 
 # 全域：是否輸出簡體中文（True = 跳過 OpenCC 繁化）
 

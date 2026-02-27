@@ -132,6 +132,12 @@ class ASREngine:
 
         _s(f"編譯 ASR 模型（{device}）…")
         core = ov.Core()
+        
+        # 建立快取目錄加速載入
+        cache_dir = model_dir / "ov_cache"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        core.set_property({'CACHE_DIR': str(cache_dir)})
+
         self.audio_enc = core.compile_model(str(ov_dir / "audio_encoder_model.xml"),      device)
         self.embedder  = core.compile_model(str(ov_dir / "thinker_embeddings_model.xml"), device)
         dec_comp       = core.compile_model(str(ov_dir / "decoder_model.xml"),            device)
@@ -356,6 +362,12 @@ class ASREngine1p7B(ASREngine):
 
         _s(f"編譯 1.7B ASR 模型（{device}）…")
         core = ov.Core()
+        
+        # 建立快取目錄加速載入
+        cache_dir = model_dir / "ov_cache"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        core.set_property({'CACHE_DIR': str(cache_dir)})
+
         self.audio_enc = core.compile_model(str(kv_dir / "audio_encoder_model.xml"),      device)
         self.embedder  = core.compile_model(str(kv_dir / "thinker_embeddings_model.xml"), device)
         self.pf_model  = core.compile_model(str(kv_dir / "decoder_prefill_kv_model.xml"), device)

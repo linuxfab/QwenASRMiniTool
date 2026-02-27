@@ -1,5 +1,15 @@
 # Agent 專案修改日誌
 
+* 更新日期時間：2026-02-27 15:00
+* 重點：啟用 OpenVINO 模型編譯快取 (Model Caching)。
+* 影響：
+  * 於 `app.py` 中的 `ASREngine` 與 `ChatLLMASREngine` 初始化時，加入 `core.set_property({'CACHE_DIR': str(cache_dir)})` 設定。
+  * 快取檔案將存放於 `models/ov_cache` 目錄下。
+* 結果：大幅縮短後續啟動與切換模型時的 `core.compile_model()` 編譯耗時（可相差 10 秒以上）。
+* 更新者：antigravity agent
+
+---
+
 * 更新日期時間：2026-02-27 14:55
 * 重點：移除 `librosa` 依賴，改用 `ffmpeg` pipe 加速載入長音檔。
 * 影響：

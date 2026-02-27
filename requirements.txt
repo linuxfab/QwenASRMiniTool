@@ -8,10 +8,9 @@ customtkinter>=5.2.0
 openvino>=2024.0.0
 onnxruntime>=1.17.0
 
-# 音訊處理
+# 音訊處理與播放
 numpy>=1.24.0
-librosa>=0.10.0
-sounddevice>=0.4.6
+# sounddevice==0.4.6
 
 # 中文轉換（簡轉繁）
 opencc-python-reimplemented>=0.1.7

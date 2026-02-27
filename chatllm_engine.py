@@ -670,9 +670,11 @@ class ChatLLMASREngine:
         diarize:    bool = False,
         n_speakers: int | None = None,
     ) -> Path | None:
-        import librosa
-
-        audio, _ = librosa.load(str(audio_path), sr=SAMPLE_RATE, mono=True)
+        from ffmpeg_utils import decode_audio_to_numpy, find_ffmpeg
+        ffmpeg_exe = find_ffmpeg()
+        if not ffmpeg_exe:
+            raise RuntimeError("找不到 ffmpeg_utils 或 ffmpeg 執行檔")
+        audio = decode_audio_to_numpy(audio_path, ffmpeg_exe, sr=SAMPLE_RATE)
 
         # ── 分段策略：說話者分離 vs 傳統 VAD（與 ASREngine 一致）────
         use_diar = diarize and self.diar_engine is not None and self.diar_engine.ready

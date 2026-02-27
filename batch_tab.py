@@ -358,8 +358,12 @@ class BatchTab(ctk.CTkFrame):
             item.duration = info.duration
         except Exception:
             try:
-                import librosa
-                item.duration = librosa.get_duration(path=str(item.path))
+                from ffmpeg_utils import get_audio_duration, find_ffmpeg
+                ffmpeg_exe = find_ffmpeg()
+                if ffmpeg_exe:
+                    item.duration = get_audio_duration(item.path, ffmpeg_exe)
+                else:
+                    item.duration = 0.0
             except Exception:
                 return
         try:

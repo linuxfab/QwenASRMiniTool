@@ -1101,16 +1101,20 @@ class SubtitleEditorWindow(ctk.CTkToplevel):
             if data.ndim > 1:
                 data = data.mean(axis=1)
             if sr != 16000:
-                import librosa
-                data = librosa.resample(data, orig_sr=sr, target_sr=16000)
+                # 讓下方 catch block 用 ffmpeg_utils 處理重採樣
+                raise ValueError("Requires 16000Hz")
             self._audio_data = data
             self._audio_sr   = 16000
         except Exception:
             try:
-                import librosa
-                data, _ = librosa.load(str(self.audio_path), sr=16000, mono=True)
-                self._audio_data = data
-                self._audio_sr   = 16000
+                from ffmpeg_utils import decode_audio_to_numpy, find_ffmpeg
+                ffmpeg_exe = find_ffmpeg()
+                if ffmpeg_exe:
+                    data = decode_audio_to_numpy(self.audio_path, ffmpeg_exe, sr=16000)
+                    self._audio_data = data
+                    self._audio_sr   = 16000
+                else:
+                    self._audio_data = None
             except Exception:
                 self._audio_data = None
 

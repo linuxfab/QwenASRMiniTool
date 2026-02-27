@@ -1,4 +1,15 @@
-# Agent Logs
+# Agent 專案修改日誌
+
+* 更新日期時間：2026-02-27 14:55
+* 重點：移除 `librosa` 依賴，改用 `ffmpeg` pipe 加速載入長音檔。
+* 影響：
+  * 在 `ffmpeg_utils.py` 中新增 `decode_audio_to_numpy()` 和 `get_audio_duration()`，直接將音訊解碼至 `float32 numpy array`，省去 Python 端 resampling 負載。
+  * 替換 `app.py`、`app-gpu.py`、`chatllm_engine.py`、`streamlit_vulkan.py`、`subtitle_editor.py` 及 `batch_tab.py` 中共 8 處的 `librosa.load` 與 `librosa.get_duration`。
+  * 移除 `pyproject.toml`、`requirements.txt` 及 `requirements-gpu.txt` 中的 `librosa` 依賴並透過 `uv sync` 更新。
+* 結果：1 小時以上的長音檔載入極快（且記憶體佔用極低），並解決了先前因 Python 資源耗盡而閃退的問題，同時安裝環境更輕量化。
+* 更新者：antigravity agent
+
+---Logs
 
 ## 2026-02-27 12:55
 

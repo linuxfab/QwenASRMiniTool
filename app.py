@@ -244,8 +244,11 @@ class ASREngine:
         diarize    : True 時用說話者分離取代 VAD，SRT 加說話者前綴
         n_speakers : 指定說話者人數（None=自動偵測）
         """
-        import librosa
-        audio, _ = librosa.load(str(audio_path), sr=SAMPLE_RATE, mono=True)
+        from ffmpeg_utils import decode_audio_to_numpy, find_ffmpeg
+        ffmpeg_exe = find_ffmpeg()
+        if not ffmpeg_exe:
+            raise RuntimeError("找不到 ffmpeg，請重新啟動程式或手動安裝。")
+        audio = decode_audio_to_numpy(audio_path, ffmpeg_exe, sr=SAMPLE_RATE)
 
         # ── 分段策略：說話者分離 vs 傳統 VAD ─────────────────────────
         # groups_spk: [(g0_sec, g1_sec, audio_chunk, speaker_label | None), ...]

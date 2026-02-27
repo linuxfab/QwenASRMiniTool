@@ -377,8 +377,11 @@ class GPUASREngine:
         n_speakers: int | None = None,
     ) -> Path | None:
         """音檔 → SRT，回傳 SRT 路徑。"""
-        import librosa
-        audio, _ = librosa.load(str(audio_path), sr=SAMPLE_RATE, mono=True)
+        from ffmpeg_utils import decode_audio_to_numpy, find_ffmpeg
+        ffmpeg_exe = find_ffmpeg()
+        if not ffmpeg_exe:
+            raise RuntimeError("找不到 ffmpeg，請重新啟動程式或手動安裝。")
+        audio = decode_audio_to_numpy(audio_path, ffmpeg_exe, sr=SAMPLE_RATE)
 
         use_diar = diarize and self.diar_engine is not None and self.diar_engine.ready
         if use_diar:

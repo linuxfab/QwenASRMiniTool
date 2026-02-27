@@ -271,11 +271,15 @@ def _find_vad() -> Path | None:
 def _audio_bytes_to_np(audio_bytes: bytes) -> np.ndarray | None:
     """將 st.audio_input 回傳的 bytes（WAV）轉為 16kHz float32 array。"""
     try:
-        import librosa
+        from ffmpeg_utils import decode_audio_to_numpy, find_ffmpeg
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
             f.write(audio_bytes)
             tmp = f.name
-        audio, _ = librosa.load(tmp, sr=SAMPLE_RATE, mono=True)
+        ffmpeg_exe = find_ffmpeg()
+        if not ffmpeg_exe:
+            st.error("找不到 ffmpeg，無法處理音訊。")
+            return
+        audio = decode_audio_to_numpy(tmp, ffmpeg_exe, sr=SAMPLE_RATE)
         os.unlink(tmp)
         return audio
     except Exception:
@@ -349,8 +353,11 @@ def _process_file(eng: dict, audio_path: Path,
                   language=None, context=None,
                   diarize=False, n_speakers=None,
                   progress_cb=None) -> str | None:
-    import librosa
-    audio, _ = librosa.load(str(audio_path), sr=SAMPLE_RATE, mono=True)
+    from ffmpeg_utils import decode_audio_to_numpy, find_ffmpeg
+    ffmpeg_exe = find_ffmpeg()
+    if not ffmpeg_exe:
+        raise RuntimeError("找不到 ffmpeg 執行檔")
+    audio = decode_audio_to_numpy(audio_path, ffmpeg_exe, sr=SAMPLE_RATE)
 
     use_diar = (diarize and eng["diar_engine"] is not None
                 and eng["diar_engine"].ready)

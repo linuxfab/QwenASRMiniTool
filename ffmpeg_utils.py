@@ -116,6 +116,82 @@ def extract_audio_to_wav(
         raise RuntimeError(f"ffmpeg 提取失敗：{last_line}")
 
 
+def decode_audio_to_numpy(
+    audio_path: Path | str,
+    ffmpeg_exe: Path | str,
+    sr: int = 16000,
+) -> "np.ndarray":
+    """用 ffmpeg pipe 直接將音訊解碼為 float32 numpy 陣列。
+    
+    取代 librosa.load，避免 Python 端重新採樣導致長音檔耗盡記憶體與時間。
+    """
+    import numpy as np
+
+    cmd = [
+        str(ffmpeg_exe), "-y",
+        "-i", str(audio_path),
+        "-vn",               # 丟棄影像流
+        "-acodec", "pcm_f32le",
+        "-ar", str(sr),      # 取樣率
+        "-ac", "1",          # 單聲道
+        "-f", "f32le",
+        "-"                  # 輸出至 stdout
+    ]
+    proc = subprocess.run(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        creationflags=_NO_WINDOW,
+    )
+    if proc.returncode != 0:
+        err = proc.stderr.decode(errors="replace")
+        last_line = next(
+            (l.strip() for l in reversed(err.splitlines()) if l.strip()), "未知錯誤"
+        )
+        raise RuntimeError(f"ffmpeg 解碼失敗：{last_line}")
+
+    # 解析出來的就是 float32 (little endian)
+    audio_array = np.frombuffer(proc.stdout, dtype=np.float32)
+    return audio_array
+
+
+def get_audio_duration(
+    audio_path: Path | str,
+    ffmpeg_exe: Path | str,
+) -> float:
+    """使用 ffprobe 取得音訊長度 (秒)。若無 ffprobe 則以解碼計算。"""
+    ffprobe_exe = Path(ffmpeg_exe).parent / "ffprobe.exe"
+    
+    if not ffprobe_exe.exists():
+        # Fallback
+        audio = decode_audio_to_numpy(audio_path, ffmpeg_exe)
+        return len(audio) / 16000.0
+
+    cmd = [
+        str(ffprobe_exe),
+        "-v", "error",
+        "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        str(audio_path)
+    ]
+    proc = subprocess.run(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        creationflags=_NO_WINDOW,
+    )
+    if proc.returncode != 0:
+        # Fallback
+        audio = decode_audio_to_numpy(audio_path, ffmpeg_exe)
+        return len(audio) / 16000.0
+        
+    try:
+        return float(proc.stdout.decode().strip())
+    except ValueError:
+        audio = decode_audio_to_numpy(audio_path, ffmpeg_exe)
+        return len(audio) / 16000.0
+
+
 # ── 下載對話框 ────────────────────────────────────────────────────────
 
 class FFmpegDownloadDialog(ctk.CTkToplevel):

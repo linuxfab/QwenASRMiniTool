@@ -1,5 +1,20 @@
 # Agent Logs
 
+## 2026-02-27 12:55
+
+**重點**: 遷移開發環境至 `uv` 管理
+
+**影響**:
+- 初始化 `pyproject.toml`，整合 CPU 與 GPU 兩版依賴
+- 設定 `requires-python = ">=3.10, <3.13"` 以確保 PyTorch CUDA (cu121) 相容性
+- 釘選 Python 3.12 版本於 `.python-version`
+- 設定 PyTorch 為專屬 Index (`https://download.pytorch.org/whl/cu121`)
+- 更新 `README.md` 指引開發者使用 `uv sync` 與 `uv run`
+
+**結果**: 統一開發環境配置，解決 Python 3.14 系統不相容 PyTorch 的問題，簡化環境建立流程。
+
+**更新者**: antigravity agent
+
 ## 2026-02-27 12:45
 
 **重點**: 重構重複程式碼，建立 `asr_utils.py` 共用模組

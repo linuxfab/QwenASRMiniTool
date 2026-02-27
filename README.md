@@ -21,7 +21,7 @@
 - **簡繁體中文輸出**：可於設定分頁切換輸出語系為繁體中文或簡體中文
 - 首次執行請選擇資料夾自動下載模型（約 1.2 GB）
 - Portable 版本包括模型開箱即用，Basic 版本檔案較小，採自動下載模型
-- 若系統已有 Python 虛擬環境且已安裝需求，可執行 `app.py`，使用 `build.bat` 可建立為 exe 檔案
+- 若為開發者，建議使用 [uv](https://github.com/astral-project/uv) 執行環境。本專案已包含 `pyproject.toml` 與 `.python-version`，僅需執行 `uv sync` 即可完成環境配置。
 
 ---
 
@@ -101,12 +101,15 @@
 現在可以支援 CUDA 以及原生 1.7B 模型，在 RTX 系列的顯示卡會有較好的辨識結果。要使用 CUDA 支援，請以 git 方式將 Source 整個 clone 下來，並點開 `start-gpu.bat` 進行環境配置。
 
 ```bash
-git clone https://github.com/dseditor/QwenASRMiniTool.git
+git clone https://github.com/linuxfab/QwenASRMiniTool.git
 cd QwenASRMiniTool
-start-gpu.bat
+
+# 使用 uv 自動配置環境並執行
+uv sync
+uv run app.py  # 或執行其它腳本
 ```
 
-假使你的系統中已經有 torch 以及相關架構，可直接沿用，不再建立虛擬環境。此版本包含模型檢查，假使沒有模型，會自動從 HuggingFace 下載。
+假使你習慣傳統方式，仍可參考 `requirements.txt` 手動安裝。
 
 ![GPU 模型載入](Readme/readme07.jpg)
 
@@ -253,9 +256,9 @@ Streamlit 前端可從網路端點（例如手機上）使用麥克風，採取�
 
 ```bash
 git pull
+uv sync  # 更新依賴
+uv run app.py
 ```
-
-拉取後直接執行 `app.py` 即可，程式啟動時會自動檢查模型完整性並在必要時補齊缺少的檔案。
 
 ### EXE 編譯版本（Portable / Basic）
 
@@ -271,7 +274,7 @@ git pull
 | 項目 | CPU 模式（最低） | GPU 模式（Vulkan）|
 |------|----------------|-----------------|
 | 作業系統 | Windows 10 / 11（64-bit）| Windows 10 / 11（64-bit）|
-| Python | 3.10 以上（Source 版） | 3.10 以上（Source 版）|
+| Python | 3.10 – 3.12（建議使用 `uv` 自動管理） | 3.10 – 3.12（建議使用 `uv` 自動管理）|
 | RAM | 6 GB（峰值約 4.8 GB）| 8 GB（1.7B GGUF 約 2.5 GB）|
 | 硬碟空間 | 2 GB（0.6B 模型 1.2 GB）| 4 GB（1.7B bin 約 2.3 GB）|
 | CPU | 任意 x86-64 | 任意 x86-64 |

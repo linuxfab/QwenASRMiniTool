@@ -1,0 +1,36 @@
+[project]
+name = "qwenasrminitool"
+version = "0.1.0"
+description = "Qwen3 ASR MiniTool"
+requires-python = ">=3.10, <3.13"
+dependencies = [
+    "customtkinter>=5.2.0",
+    "huggingface-hub>=0.20.0",
+    "kaldi-native-fbank>=1.19",
+    "librosa>=0.10.0",
+    "numpy>=1.24.0",
+    "onnxruntime>=1.17.0",
+    "opencc-python-reimplemented>=0.1.7",
+    "openvino>=2024.0.0",
+    "qwen-asr>=0.0.6",
+    "requests>=2.30.0",
+    "sounddevice>=0.4.6",
+    "soundfile>=0.12.0",
+    "streamlit>=1.28.0",
+    "tokenizers>=0.15.0",
+    "torch",
+    "tqdm>=4.65.0",
+]
+
+[tool.uv]
+required-environments = [
+    "sys_platform == 'win32' and platform_machine == 'AMD64'"
+]
+
+[[tool.uv.index]]
+name = "pytorch-gpu"
+url = "https://download.pytorch.org/whl/cu121"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-gpu" }

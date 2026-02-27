@@ -27,14 +27,12 @@ import numpy as np
 # True = 直接輸出模型原始簡體；False = 經 OpenCC s2twp 轉為繁體
 _output_simplified: bool = False
 
-# ── 共用常數（與 app.py 保持同步）─────────────────────────────────────
-SAMPLE_RATE   = 16000
-VAD_CHUNK     = 512
-VAD_THRESHOLD = 0.5
-MAX_GROUP_SEC = 20
-MAX_CHARS     = 20
-MIN_SUB_SEC   = 0.6
-GAP_SEC       = 0.08
+# ── 共用常數與工具函式（統一在 asr_utils.py）────────────────────────
+from asr_utils import (
+    SAMPLE_RATE, VAD_CHUNK, VAD_THRESHOLD, MAX_GROUP_SEC,
+    MAX_CHARS, MIN_SUB_SEC, GAP_SEC,
+    detect_speech_groups, split_to_lines, srt_ts, assign_ts,
+)
 
 if getattr(sys, "frozen", False):
     BASE_DIR = Path(sys.executable).parent
@@ -466,104 +464,7 @@ class _DLLASRRunner:
         return full.split("<asr_text>", 1)[1].strip()
 
 
-# ══════════════════════════════════════════════════════
-# 輔助函式（從 app.py 複製，避免循環 import）
-# ══════════════════════════════════════════════════════
 
-def _detect_speech_groups(audio: np.ndarray, vad_sess, max_group_sec: int = MAX_GROUP_SEC):
-    h  = np.zeros((2, 1, 64), dtype=np.float32)
-    c  = np.zeros((2, 1, 64), dtype=np.float32)
-    sr = np.array(SAMPLE_RATE, dtype=np.int64)
-    n  = len(audio) // VAD_CHUNK
-    probs = []
-    for i in range(n):
-        chunk = audio[i*VAD_CHUNK:(i+1)*VAD_CHUNK].astype(np.float32)[np.newaxis, :]
-        out, h, c = vad_sess.run(None, {"input": chunk, "h": h, "c": c, "sr": sr})
-        probs.append(float(out[0, 0]))
-    if not probs:
-        return [(0.0, len(audio) / SAMPLE_RATE, audio)]
-
-    MIN_CH = 16; PAD = 5; MERGE = 16
-    raw: list[tuple[int, int]] = []
-    in_sp = False; s0 = 0
-    for i, p in enumerate(probs):
-        if p >= VAD_THRESHOLD and not in_sp:
-            s0 = i; in_sp = True
-        elif p < VAD_THRESHOLD and in_sp:
-            if i - s0 >= MIN_CH:
-                raw.append((max(0, s0-PAD), min(n, i+PAD)))
-            in_sp = False
-    if in_sp and n - s0 >= MIN_CH:
-        raw.append((max(0, s0-PAD), n))
-    if not raw:
-        return []
-
-    merged = [list(raw[0])]
-    for s, e in raw[1:]:
-        if s - merged[-1][1] <= MERGE:
-            merged[-1][1] = e
-        else:
-            merged.append([s, e])
-
-    mx_samp = max_group_sec * SAMPLE_RATE
-    groups: list[tuple[int, int]] = []
-    gs = merged[0][0] * VAD_CHUNK
-    ge = merged[0][1] * VAD_CHUNK
-    for seg in merged[1:]:
-        s = seg[0] * VAD_CHUNK; e = seg[1] * VAD_CHUNK
-        if e - gs > mx_samp:
-            groups.append((gs, ge)); gs = s
-        ge = e
-    groups.append((gs, ge))
-
-    result = []
-    for gs, ge in groups:
-        ns = max(1, int((ge - gs) // SAMPLE_RATE))
-        ch = audio[gs: gs + ns * SAMPLE_RATE].astype(np.float32)
-        if len(ch) < SAMPLE_RATE:
-            continue
-        result.append((gs / SAMPLE_RATE, gs / SAMPLE_RATE + ns, ch))
-    return result
-
-
-def _split_to_lines(text: str) -> list[str]:
-    text = text.strip()
-    if not text:
-        return []
-    parts = re.split(r"[。！？，、；：…—,.!?;:]+", text)
-    lines = []
-    for p in parts:
-        p = p.strip()
-        if not p:
-            continue
-        while len(p) > MAX_CHARS:
-            lines.append(p[:MAX_CHARS]); p = p[MAX_CHARS:]
-        lines.append(p)
-    return [l for l in lines if l.strip()]
-
-
-def _srt_ts(s: float) -> str:
-    ms = int(round(s * 1000))
-    hh = ms // 3_600_000; ms %= 3_600_000
-    mm = ms // 60_000;    ms %= 60_000
-    ss = ms // 1_000;     ms %= 1_000
-    return f"{hh:02d}:{mm:02d}:{ss:02d},{ms:03d}"
-
-
-def _assign_ts(lines: list[str], g0: float, g1: float) -> list[tuple[float, float, str]]:
-    if not lines:
-        return []
-    total = sum(len(l) for l in lines)
-    if total == 0:
-        return []
-    dur = g1 - g0; res = []; cur = g0
-    for i, line in enumerate(lines):
-        end = cur + max(MIN_SUB_SEC, dur * len(line) / total)
-        if i == len(lines) - 1:
-            end = max(end, g1)
-        res.append((cur, end, line))
-        cur = end + GAP_SEC
-    return res
 
 
 # ══════════════════════════════════════════════════════
@@ -786,7 +687,7 @@ class ChatLLMASREngine:
                 for t0, t1, spk in diar_segs
             ]
         else:
-            vad_groups = _detect_speech_groups(audio, self.vad_sess, self.max_chunk_secs)
+            vad_groups = detect_speech_groups(audio, self.vad_sess, self.max_chunk_secs)
             if not vad_groups:
                 return None
             groups_spk = [(g0, g1, chunk, None) for g0, g1, chunk in vad_groups]
@@ -802,9 +703,9 @@ class ChatLLMASREngine:
             text = self.transcribe(chunk, language=language, context=context)
             if not text:
                 continue
-            lines = _split_to_lines(text)
+            lines = split_to_lines(text)
             all_subs.extend(
-                (s, e, line, spk) for s, e, line in _assign_ts(lines, g0, g1)
+                (s, e, line, spk) for s, e, line in assign_ts(lines, g0, g1)
             )
 
         if not all_subs:
@@ -818,7 +719,7 @@ class ChatLLMASREngine:
         with open(out, "w", encoding="utf-8") as f:
             for idx, (s, e, line, spk) in enumerate(all_subs, 1):
                 prefix = f"{spk}：" if spk else ""
-                f.write(f"{idx}\n{_srt_ts(s)} --> {_srt_ts(e)}\n{prefix}{line}\n\n")
+                f.write(f"{idx}\n{srt_ts(s)} --> {srt_ts(e)}\n{prefix}{line}\n\n")
         return out
 
     def __del__(self):

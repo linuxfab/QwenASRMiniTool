@@ -35,7 +35,6 @@ import tempfile
 import time
 import threading
 import types
-import queue
 from datetime import datetime
 from pathlib import Path
 import tkinter as tk
@@ -72,173 +71,20 @@ SUPPORTED_LANGUAGES = [
     "Filipino", "Persian", "Greek", "Romanian", "Hungarian", "Macedonian",
 ]
 
-# ── 常數 ──────────────────────────────────────────────
-SAMPLE_RATE          = 16000
-VAD_CHUNK            = 512
-VAD_THRESHOLD        = 0.5
-MAX_GROUP_SEC        = 20
-MAX_CHARS            = 20
-MIN_SUB_SEC          = 0.6
-GAP_SEC              = 0.08
-RT_SILENCE_CHUNKS    = 25
-RT_MAX_BUFFER_CHUNKS = 600
+# ── 共用常數與工具函式（統一在 asr_utils.py）────────────────────────
+from asr_utils import (
+    SAMPLE_RATE, VAD_CHUNK, VAD_THRESHOLD, MAX_GROUP_SEC,
+    MAX_CHARS, MIN_SUB_SEC, GAP_SEC,
+    RT_SILENCE_CHUNKS, RT_MAX_BUFFER_CHUNKS,
+    detect_speech_groups, split_to_lines, srt_ts, assign_ts,
+    RealtimeManager,
+)
 
-# ── 斷句標點集合 ──────────────────────────────────────────
+# ── 斷句標點集合（ForcedAligner 專用）───────────────────────────
 # 中文子句結束標點（不保留，切行後隱藏）
 _ZH_CLAUSE_END = frozenset('，。？！；：…—、·')
 # 英文子句結束標點（含逗號，讓英文逗號也觸發切行）
 _EN_SENT_END   = frozenset('.,!?;')
-
-
-# ══════════════════════════════════════════════════════
-# 共用工具函式（與 app.py 相同）
-# ══════════════════════════════════════════════════════
-
-def _detect_speech_groups(audio: np.ndarray, vad_sess) -> list[tuple[float, float, np.ndarray]]:
-    """Silero VAD 分段，回傳 [(start_s, end_s, chunk), ...]"""
-    h  = np.zeros((2, 1, 64), dtype=np.float32)
-    c  = np.zeros((2, 1, 64), dtype=np.float32)
-    sr = np.array(SAMPLE_RATE, dtype=np.int64)
-    n  = len(audio) // VAD_CHUNK
-    probs = []
-    for i in range(n):
-        chunk = audio[i*VAD_CHUNK:(i+1)*VAD_CHUNK].astype(np.float32)[np.newaxis, :]
-        out, h, c = vad_sess.run(None, {"input": chunk, "h": h, "c": c, "sr": sr})
-        probs.append(float(out[0, 0]))
-    if not probs:
-        return [(0.0, len(audio) / SAMPLE_RATE, audio)]
-
-    MIN_CH = 16; PAD = 5; MERGE = 16
-    raw: list[tuple[int, int]] = []
-    in_sp = False; s0 = 0
-    for i, p in enumerate(probs):
-        if p >= VAD_THRESHOLD and not in_sp:
-            s0 = i; in_sp = True
-        elif p < VAD_THRESHOLD and in_sp:
-            if i - s0 >= MIN_CH:
-                raw.append((max(0, s0-PAD), min(n, i+PAD)))
-            in_sp = False
-    if in_sp and n - s0 >= MIN_CH:
-        raw.append((max(0, s0-PAD), n))
-    if not raw:
-        return []
-
-    merged = [list(raw[0])]
-    for s, e in raw[1:]:
-        if s - merged[-1][1] <= MERGE:
-            merged[-1][1] = e
-        else:
-            merged.append([s, e])
-
-    mx_samp = MAX_GROUP_SEC * SAMPLE_RATE
-    groups: list[tuple[int, int]] = []
-    gs = merged[0][0] * VAD_CHUNK
-    ge = merged[0][1] * VAD_CHUNK
-    for seg in merged[1:]:
-        s = seg[0] * VAD_CHUNK; e = seg[1] * VAD_CHUNK
-        if e - gs > mx_samp:
-            groups.append((gs, ge)); gs = s
-        ge = e
-    groups.append((gs, ge))
-
-    result = []
-    for gs, ge in groups:
-        ns = max(1, int((ge - gs) // SAMPLE_RATE))
-        ch = audio[gs: gs + ns * SAMPLE_RATE].astype(np.float32)
-        if len(ch) < SAMPLE_RATE:
-            continue
-        result.append((gs / SAMPLE_RATE, gs / SAMPLE_RATE + ns, ch))
-    return result
-
-
-def _split_to_lines(text: str) -> list[str]:
-    """語意優先斷句（ForcedAligner 不可用時的 fallback）。
-
-    斷句規則（英文/中文統一）：
-    1. 所有標點（,.!?; 及中文，。？！）→ 立即切行，標點不輸出
-    2. 英文整字為最小單位，詞間保留空格
-    3. MAX_CHARS 保護：超限才強制換行
-    """
-    if not text:
-        return []
-
-    _all_punct = _ZH_CLAUSE_END | _EN_SENT_END  # 含逗號
-    lines: list[str] = []
-    buf = ""
-
-    i = 0
-    while i < len(text):
-        ch = text[i]
-
-        # ── 標點符號：切行，標點不加入輸出（隱藏）────────────────────
-        if ch in _all_punct:
-            if buf.strip():
-                lines.append(buf.strip())
-            buf = ""
-            i += 1
-            continue
-
-        # ── 英文單字：整字收集，詞前補空格（詞界）────────────────────
-        if ch.isalpha() and ord(ch) < 128:
-            j = i
-            while j < len(text) and text[j].isalpha() and ord(text[j]) < 128:
-                j += 1
-            word = text[i:j]
-            # buf 非空且未以空格結尾 → 補一個分詞空格
-            prefix = " " if buf and not buf.endswith(" ") else ""
-            if len(buf) + len(prefix) + len(word) > MAX_CHARS and buf.strip():
-                lines.append(buf.strip())
-                buf = word
-            else:
-                buf += prefix + word
-            i = j
-            continue
-
-        # ── 空格：只在 buf 有內容且未以空格結尾時記錄 ────────────────
-        if ch == " ":
-            if buf and not buf.endswith(" "):
-                buf += " "
-            i += 1
-            if len(buf.rstrip()) >= MAX_CHARS:
-                lines.append(buf.strip())
-                buf = ""
-            continue
-
-        # ── 中文/日文/數字等：逐字累積 ────────────────────────────────
-        buf += ch
-        i += 1
-        if len(buf) >= MAX_CHARS:
-            lines.append(buf.strip())
-            buf = ""
-
-    if buf.strip():
-        lines.append(buf.strip())
-    return [l for l in lines if l.strip()]
-
-
-
-def _srt_ts(s: float) -> str:
-    ms = int(round(s * 1000))
-    hh = ms // 3_600_000; ms %= 3_600_000
-    mm = ms // 60_000;    ms %= 60_000
-    ss = ms // 1_000;     ms %= 1_000
-    return f"{hh:02d}:{mm:02d}:{ss:02d},{ms:03d}"
-
-
-def _assign_ts(lines: list[str], g0: float, g1: float) -> list[tuple[float, float, str]]:
-    if not lines:
-        return []
-    total = sum(len(l) for l in lines)
-    if total == 0:
-        return []
-    dur = g1 - g0; res = []; cur = g0
-    for i, line in enumerate(lines):
-        end = cur + max(MIN_SUB_SEC, dur * len(line) / total)
-        if i == len(lines) - 1:
-            end = max(end, g1)
-        res.append((cur, end, line))
-        cur = end + GAP_SEC
-    return res
 
 
 def _find_vad_model() -> Path | None:
@@ -546,7 +392,7 @@ class GPUASREngine:
                 for t0, t1, spk in diar_segs
             ]
         else:
-            vad_groups = _detect_speech_groups(audio, self.vad_sess)
+            vad_groups = detect_speech_groups(audio, self.vad_sess)
             if not vad_groups:
                 return None
             groups_spk = [(g0, g1, chunk, None) for g0, g1, chunk in vad_groups]
@@ -595,9 +441,9 @@ class GPUASREngine:
             if not aligned:
                 # ── 比例估算 Fallback ──────────────────────────────────────
                 text = raw_text if _g_output_simplified else self.cc.convert(raw_text)
-                lines = _split_to_lines(text)
+                lines = split_to_lines(text)
                 all_subs.extend(
-                    (s, e, line, spk) for s, e, line in _assign_ts(lines, g0, g1)
+                    (s, e, line, spk) for s, e, line in assign_ts(lines, g0, g1)
                 )
 
         if not all_subs:
@@ -610,90 +456,10 @@ class GPUASREngine:
         with open(out, "w", encoding="utf-8") as f:
             for idx, (s, e, line, spk) in enumerate(all_subs, 1):
                 prefix = f"{spk}：" if spk else ""
-                f.write(f"{idx}\n{_srt_ts(s)} --> {_srt_ts(e)}\n{prefix}{line}\n\n")
+                f.write(f"{idx}\n{srt_ts(s)} --> {srt_ts(e)}\n{prefix}{line}\n\n")
         return out
 
 
-# ══════════════════════════════════════════════════════
-# 即時轉錄管理員（與 app.py 相同）
-# ══════════════════════════════════════════════════════
-
-class RealtimeManager:
-    def __init__(self, asr, device_idx, on_text, on_status,
-                 language=None, context=None):
-        self.asr       = asr
-        self.dev_idx   = device_idx
-        self.on_text   = on_text
-        self.on_status = on_status
-        self.language  = language
-        self.context   = context
-        self._q        = queue.Queue()
-        self._running  = False
-        self._stream   = None
-
-    def start(self):
-        import sounddevice as sd
-        self._running = True
-        # 查詢裝置原生聲道數：立體聲混音等 loopback 裝置需要 2ch
-        dev_info        = sd.query_devices(self.dev_idx, "input")
-        self._native_ch = max(1, int(dev_info["max_input_channels"]))
-        self._stream  = sd.InputStream(
-            device=self.dev_idx, samplerate=SAMPLE_RATE,
-            channels=self._native_ch, blocksize=VAD_CHUNK, dtype="float32",
-            callback=self._audio_cb,
-        )
-        threading.Thread(target=self._loop, daemon=True).start()
-        self._stream.start()
-        self.on_status("🔴 錄音中…")
-
-    def stop(self):
-        self._running = False
-        if self._stream:
-            self._stream.stop(); self._stream.close(); self._stream = None
-        self.on_status("⏹ 已停止")
-
-    def _audio_cb(self, indata, frames, time_info, status):
-        # 多聲道混音取平均轉 mono（立體聲混音 / WASAPI loopback 2ch）
-        mono = indata.mean(axis=1) if indata.shape[1] > 1 else indata[:, 0]
-        self._q.put(mono.copy())
-
-    def _loop(self):
-        h   = np.zeros((2, 1, 64), dtype=np.float32)
-        c   = np.zeros((2, 1, 64), dtype=np.float32)
-        sr  = np.array(SAMPLE_RATE, dtype=np.int64)
-        buf: list[np.ndarray] = []
-        sil = 0
-
-        while self._running:
-            try:
-                chunk = self._q.get(timeout=0.1)
-            except queue.Empty:
-                continue
-
-            out, h, c = self.asr.vad_sess.run(
-                None,
-                {"input": chunk[np.newaxis, :].astype(np.float32), "h": h, "c": c, "sr": sr},
-            )
-            prob = float(out[0, 0])
-
-            if prob >= VAD_THRESHOLD:
-                buf.append(chunk); sil = 0
-            elif buf:
-                buf.append(chunk); sil += 1
-                if sil >= RT_SILENCE_CHUNKS or len(buf) >= RT_MAX_BUFFER_CHUNKS:
-                    audio = np.concatenate(buf)
-                    n = max(1, len(audio) // SAMPLE_RATE) * SAMPLE_RATE
-                    try:
-                        text = self.asr.transcribe(
-                            audio[:n], language=self.language, context=self.context
-                        )
-                        if text:
-                            self.on_text(text)
-                    except Exception as _e:
-                        self.on_status(f"⚠ 轉錄錯誤：{_e}")
-                    buf = []; sil = 0
-                    h = np.zeros((2, 1, 64), dtype=np.float32)
-                    c = np.zeros((2, 1, 64), dtype=np.float32)
 
 
 # ══════════════════════════════════════════════════════

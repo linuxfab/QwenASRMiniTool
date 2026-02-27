@@ -41,13 +41,13 @@ SUPPORTED_LANGUAGES = [
     "Dutch", "Swedish", "Danish", "Finnish", "Polish", "Czech",
     "Filipino", "Persian", "Greek", "Romanian", "Hungarian", "Macedonian",
 ]
-SAMPLE_RATE   = 16000
-VAD_CHUNK     = 512
-VAD_THRESHOLD = 0.5
-MAX_GROUP_SEC = 20
-MAX_CHARS     = 20
-MIN_SUB_SEC   = 0.6
-GAP_SEC       = 0.08
+
+# ── 共用常數與工具函式（統一在 asr_utils.py）────────────────────────
+from asr_utils import (
+    SAMPLE_RATE, VAD_CHUNK, VAD_THRESHOLD, MAX_GROUP_SEC,
+    MAX_CHARS, MIN_SUB_SEC, GAP_SEC,
+    detect_speech_groups, split_to_lines, srt_ts, assign_ts,
+)
 
 
 # ══════════════════════════════════════════════════════════
@@ -258,101 +258,6 @@ hr { border-color: rgba(255,255,255,0.06) !important; }
 st.markdown(GLASS_CSS, unsafe_allow_html=True)
 
 
-# ══════════════════════════════════════════════════════════
-# 工具函式（與 app-gpu.py 共用邏輯）
-# ══════════════════════════════════════════════════════════
-
-def _detect_speech_groups(audio: np.ndarray, vad_sess) -> list[tuple[float, float, np.ndarray]]:
-    h  = np.zeros((2, 1, 64), dtype=np.float32)
-    c  = np.zeros((2, 1, 64), dtype=np.float32)
-    sr = np.array(SAMPLE_RATE, dtype=np.int64)
-    n  = len(audio) // VAD_CHUNK
-    probs = []
-    for i in range(n):
-        chunk = audio[i*VAD_CHUNK:(i+1)*VAD_CHUNK].astype(np.float32)[np.newaxis, :]
-        out, h, c = vad_sess.run(None, {"input": chunk, "h": h, "c": c, "sr": sr})
-        probs.append(float(out[0, 0]))
-    if not probs:
-        return [(0.0, len(audio) / SAMPLE_RATE, audio)]
-
-    MIN_CH = 16; PAD = 5; MERGE = 16
-    raw: list[tuple[int, int]] = []
-    in_sp = False; s0 = 0
-    for i, p in enumerate(probs):
-        if p >= VAD_THRESHOLD and not in_sp:
-            s0 = i; in_sp = True
-        elif p < VAD_THRESHOLD and in_sp:
-            if i - s0 >= MIN_CH:
-                raw.append((max(0, s0-PAD), min(n, i+PAD)))
-            in_sp = False
-    if in_sp and n - s0 >= MIN_CH:
-        raw.append((max(0, s0-PAD), n))
-    if not raw:
-        return []
-
-    merged = [list(raw[0])]
-    for s, e in raw[1:]:
-        if s - merged[-1][1] <= MERGE:
-            merged[-1][1] = e
-        else:
-            merged.append([s, e])
-
-    mx_samp = MAX_GROUP_SEC * SAMPLE_RATE
-    groups: list[tuple[int, int]] = []
-    gs = merged[0][0] * VAD_CHUNK
-    ge = merged[0][1] * VAD_CHUNK
-    for seg in merged[1:]:
-        s = seg[0] * VAD_CHUNK; e = seg[1] * VAD_CHUNK
-        if e - gs > mx_samp:
-            groups.append((gs, ge)); gs = s
-        ge = e
-    groups.append((gs, ge))
-
-    result = []
-    for gs, ge in groups:
-        ns = max(1, int((ge - gs) // SAMPLE_RATE))
-        ch = audio[gs: gs + ns * SAMPLE_RATE].astype(np.float32)
-        if len(ch) < SAMPLE_RATE:
-            continue
-        result.append((gs / SAMPLE_RATE, gs / SAMPLE_RATE + ns, ch))
-    return result
-
-
-def _split_to_lines(text: str) -> list[str]:
-    if not text:
-        return []
-    parts = re.split(r"[。！？，、；：…—,.!?;:]+", text)
-    lines = []
-    for p in parts:
-        p = p.strip()
-        if not p:
-            continue
-        while len(p) > MAX_CHARS:
-            lines.append(p[:MAX_CHARS]); p = p[MAX_CHARS:]
-        lines.append(p)
-    return [l for l in lines if l.strip()]
-
-
-def _srt_ts(s: float) -> str:
-    ms = int(round(s * 1000))
-    hh = ms // 3_600_000; ms %= 3_600_000
-    mm = ms // 60_000;    ms %= 60_000
-    ss = ms // 1_000;     ms %= 1_000
-    return f"{hh:02d}:{mm:02d}:{ss:02d},{ms:03d}"
-
-
-def _assign_ts(lines, g0, g1):
-    if not lines:
-        return []
-    total = sum(len(l) for l in lines) or 1
-    dur = g1 - g0; res = []; cur = g0
-    for i, line in enumerate(lines):
-        end = cur + max(MIN_SUB_SEC, dur * len(line) / total)
-        if i == len(lines) - 1:
-            end = max(end, g1)
-        res.append((cur, end, line))
-        cur = end + GAP_SEC
-    return res
 
 
 def _find_vad() -> Path | None:
@@ -456,7 +361,7 @@ def _process_file(eng: dict, audio_path: Path,
         groups = [(t0, t1, audio[int(t0*SAMPLE_RATE):int(t1*SAMPLE_RATE)], spk)
                   for t0, t1, spk in segs]
     else:
-        vad_groups = _detect_speech_groups(audio, eng["vad_sess"])
+        vad_groups = detect_speech_groups(audio, eng["vad_sess"])
         if not vad_groups:
             return None
         groups = [(g0, g1, ch, None) for g0, g1, ch in vad_groups]
@@ -469,8 +374,8 @@ def _process_file(eng: dict, audio_path: Path,
         text = _transcribe(eng, chunk, language=language, context=context)
         if not text:
             continue
-        lines = _split_to_lines(text)
-        for s, e, line in _assign_ts(lines, g0, g1):
+        lines = split_to_lines(text)
+        for s, e, line in assign_ts(lines, g0, g1):
             all_subs.append((s, e, line, spk))
 
     if not all_subs:
@@ -479,7 +384,7 @@ def _process_file(eng: dict, audio_path: Path,
     srt_lines = []
     for idx, (s, e, line, spk) in enumerate(all_subs, 1):
         prefix = f"{spk}：" if spk else ""
-        srt_lines.append(f"{idx}\n{_srt_ts(s)} --> {_srt_ts(e)}\n{prefix}{line}\n")
+        srt_lines.append(f"{idx}\n{srt_ts(s)} --> {srt_ts(e)}\n{prefix}{line}\n")
     return "\n".join(srt_lines)
 
 

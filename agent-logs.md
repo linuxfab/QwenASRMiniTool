@@ -1,5 +1,12 @@
 # Agent 專案修改日誌
 
+* 更新日期時間：2026-02-28 14:06
+* 重點：將 engine-decoupling 功能合併回主分支
+* 影響：合併 app.py, engine 等多個模組重構程式碼，統一 API 介面。
+* 結果：整合完成，未來有統一入口。
+* 更新者：antigravity agent
+
+---
 * 更新日期時間：2026-02-28 09:35
 * 重點：架構重構 — 將 ASR 引擎抽離為獨立 `engine/` 模組（Core Engine API）
 * 影響：

@@ -1475,17 +1475,14 @@ class App(ctk.CTk):
         self._file_n_speakers = (int(n_spk_sel)
                                   if n_spk_sel.isdigit() else None)
 
-        # 影片檔案需要 ffmpeg → 先確保可用
-        from ffmpeg_utils import is_video, ensure_ffmpeg
-        if is_video(path):
-            def _on_ffmpeg_ready(ffmpeg_path):
-                self._ffmpeg_exe = ffmpeg_path
-                self._do_start_convert()
-            ensure_ffmpeg(self, on_ready=_on_ffmpeg_ready)
-            return   # 等 ensure_ffmpeg 回呼（同步有 ffmpeg 時也會回呼）
-
-        self._ffmpeg_exe = None
-        self._do_start_convert()
+        # 所有檔案（包括音訊）皆需 ffmpeg 進行處理
+        from ffmpeg_utils import ensure_ffmpeg
+        
+        def _on_ffmpeg_ready(ffmpeg_path):
+            self._ffmpeg_exe = ffmpeg_path
+            self._do_start_convert()
+            
+        ensure_ffmpeg(self, on_ready=_on_ffmpeg_ready)
 
     def _do_start_convert(self):
         """ffmpeg 確認後（或非影片檔案時）實際啟動轉換執行緒。"""

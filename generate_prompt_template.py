@@ -11,7 +11,7 @@ import numpy as np
 from pathlib import Path
 
 BASE_DIR = Path(__file__).parent
-OV_DIR   = BASE_DIR / "ov_models" / "qwen3_asr_int8"
+OV_DIR   = Path(r"D:\googledrive\MyData\antigravity_workspace\QwenASRMiniTool\QwenASRMiniTool\ov_models\qwen3_asr_int8")
 OUT_PATH = BASE_DIR / "prompt_template.json"
 
 print("載入 qwen_asr processor…")

@@ -27,11 +27,8 @@ VIDEO_EXTS = {
     ".vob", ".3gp", ".f4v", ".mxf",
 }
 
-# ── ffmpeg Windows 下載來源（BtbN essentials，約 55 MB）────────────
-_FFMPEG_URL = (
-    "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/"
-    "ffmpeg-master-latest-win64-gpl-essentials.zip"
-)
+# ── ffmpeg Windows 下載來源（gyan.dev essentials，約 30-40 MB）────────────
+_FFMPEG_URL = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
 # ZIP 內 ffmpeg.exe 的路徑前綴（版本號不固定，只比對後綴）
 _FFMPEG_ZIP_SUFFIX = "bin/ffmpeg.exe"
 
@@ -347,7 +344,11 @@ class FFmpegDownloadDialog(ctk.CTkToplevel):
 
         self._q.put(("status", "正在下載 ZIP…"))
         try:
-            with urllib.request.urlopen(_FFMPEG_URL, timeout=60, context=_ssl_ctx()) as resp:
+            req = urllib.request.Request(
+                _FFMPEG_URL, 
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+            )
+            with urllib.request.urlopen(req, timeout=60, context=_ssl_ctx()) as resp:
                 total = int(resp.headers.get("Content-Length", 0))
                 total_mb = total / 1024 / 1024
                 downloaded = 0

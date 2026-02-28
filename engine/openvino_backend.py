@@ -62,17 +62,20 @@ class OpenVINO06BEngine(ASREngineBase):
 
         cache_dir = model_dir / "ov_cache"
         cache_dir.mkdir(parents=True, exist_ok=True)
-        core.set_property({"CACHE_DIR": _safe_ov_path(cache_dir)})
+        try:
+            core.set_property({"CACHE_DIR": _safe_ov_path(cache_dir)})
+        except Exception:
+            pass
 
-        self.audio_enc = core.compile_model(
-            _safe_ov_path(ov_dir / "audio_encoder_model.xml"), device
-        )
-        self.embedder = core.compile_model(
-            _safe_ov_path(ov_dir / "thinker_embeddings_model.xml"), device
-        )
-        dec_comp = core.compile_model(
-            _safe_ov_path(ov_dir / "decoder_model.xml"), device
-        )
+        def _compile(xml_path: Path):
+            xml_data = xml_path.read_bytes()
+            bin_data = xml_path.with_suffix(".bin").read_bytes()
+            model = core.read_model(model=xml_data, weights=bin_data)
+            return core.compile_model(model, device)
+
+        self.audio_enc = _compile(ov_dir / "audio_encoder_model.xml")
+        self.embedder  = _compile(ov_dir / "thinker_embeddings_model.xml")
+        dec_comp       = _compile(ov_dir / "decoder_model.xml")
         self.dec_req = dec_comp.create_infer_request()
 
         # ── Processor ──────────────────────────────────────────────
@@ -187,20 +190,21 @@ class OpenVINO17BEngine(ASREngineBase):
 
         cache_dir = model_dir / "ov_cache"
         cache_dir.mkdir(parents=True, exist_ok=True)
-        core.set_property({"CACHE_DIR": _safe_ov_path(cache_dir)})
+        try:
+            core.set_property({"CACHE_DIR": _safe_ov_path(cache_dir)})
+        except Exception:
+            pass
 
-        self.audio_enc = core.compile_model(
-            _safe_ov_path(kv_dir / "audio_encoder_model.xml"), device
-        )
-        self.embedder = core.compile_model(
-            _safe_ov_path(kv_dir / "thinker_embeddings_model.xml"), device
-        )
-        self.pf_model = core.compile_model(
-            _safe_ov_path(kv_dir / "decoder_prefill_kv_model.xml"), device
-        )
-        self.dc_model = core.compile_model(
-            _safe_ov_path(kv_dir / "decoder_kv_model.xml"), device
-        )
+        def _compile(xml_path: Path):
+            xml_data = xml_path.read_bytes()
+            bin_data = xml_path.with_suffix(".bin").read_bytes()
+            model = core.read_model(model=xml_data, weights=bin_data)
+            return core.compile_model(model, device)
+
+        self.audio_enc = _compile(kv_dir / "audio_encoder_model.xml")
+        self.embedder  = _compile(kv_dir / "thinker_embeddings_model.xml")
+        self.pf_model  = _compile(kv_dir / "decoder_prefill_kv_model.xml")
+        self.dc_model  = _compile(kv_dir / "decoder_kv_model.xml")
 
         # ── Processor ──────────────────────────────────────────────
         _s("載入 Processor（純 numpy，1.7B 10s）…")

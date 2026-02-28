@@ -1,5 +1,18 @@
 # Agent 專案修改日誌
 
+* 更新日期時間：2026-02-28 09:35
+* 重點：架構重構 — 將 ASR 引擎抽離為獨立 `engine/` 模組（Core Engine API）
+* 影響：
+  * 新增 `engine/__init__.py`, `engine/base.py`, `engine/factory.py` — 統一介面與工廠函式
+  * 新增 `engine/openvino_backend.py` — 從 `app.py` 提取 `ASREngine` + `ASREngine1p7B`
+  * 新增 `engine/vulkan_backend.py` — 從 `chatllm_engine.py` 提取 `ChatLLMASREngine`
+  * 新增 `engine/cuda_backend.py` — 從 `app-gpu.py` 提取 `GPUASREngine`
+  * 修改 `app.py`：移除 ~370 行內嵌引擎類別，改用 `create_engine()` 工廠函式；消除 `_g_output_simplified` 全域變數
+* 結果：`process_file()` 統一在 `ASREngineBase` 中實作，消除 3 份重複（~180 行 × 3）。未來新增後端（如 ONNX Runtime, TensorRT）或新前端（如 FastAPI, PyQt）只需實作 `load()` + `transcribe()` 兩個方法。
+* 更新者：antigravity agent
+
+---
+
 * 更新日期時間：2026-02-27 15:00
 * 重點：啟用 OpenVINO 模型編譯快取 (Model Caching)。
 * 影響：

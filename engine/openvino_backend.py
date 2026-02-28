@@ -49,13 +49,13 @@ class OpenVINO06BEngine(ASREngineBase):
         core.set_property({"CACHE_DIR": str(cache_dir)})
 
         self.audio_enc = core.compile_model(
-            str(ov_dir / "audio_encoder_model.xml"), device
+            ov_dir / "audio_encoder_model.xml", device
         )
         self.embedder = core.compile_model(
-            str(ov_dir / "thinker_embeddings_model.xml"), device
+            ov_dir / "thinker_embeddings_model.xml", device
         )
         dec_comp = core.compile_model(
-            str(ov_dir / "decoder_model.xml"), device
+            ov_dir / "decoder_model.xml", device
         )
         self.dec_req = dec_comp.create_infer_request()
 
@@ -174,16 +174,16 @@ class OpenVINO17BEngine(ASREngineBase):
         core.set_property({"CACHE_DIR": str(cache_dir)})
 
         self.audio_enc = core.compile_model(
-            str(kv_dir / "audio_encoder_model.xml"), device
+            kv_dir / "audio_encoder_model.xml", device
         )
         self.embedder = core.compile_model(
-            str(kv_dir / "thinker_embeddings_model.xml"), device
+            kv_dir / "thinker_embeddings_model.xml", device
         )
         self.pf_model = core.compile_model(
-            str(kv_dir / "decoder_prefill_kv_model.xml"), device
+            kv_dir / "decoder_prefill_kv_model.xml", device
         )
         self.dc_model = core.compile_model(
-            str(kv_dir / "decoder_kv_model.xml"), device
+            kv_dir / "decoder_kv_model.xml", device
         )
 
         # ── Processor ──────────────────────────────────────────────

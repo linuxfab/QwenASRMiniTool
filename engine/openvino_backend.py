@@ -17,6 +17,22 @@ from .base import ASREngineBase, BASE_DIR
 _DEFAULT_MODEL_DIR = BASE_DIR / "ov_models"
 
 
+def _safe_ov_path(p: Path | str) -> str:
+    """轉換為 Windows 8.3 短路徑，避開 OpenVINO C++ 底層處理非 ASCII 路徑的 utf-8 解碼錯誤。"""
+    s = str(p)
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            n = ctypes.windll.kernel32.GetShortPathNameW(s, None, 0)
+            if n > 0:
+                buf = ctypes.create_unicode_buffer(n)
+                if ctypes.windll.kernel32.GetShortPathNameW(s, buf, n) > 0:
+                    return buf.value
+        except Exception:
+            pass
+    return s
+
+
 class OpenVINO06BEngine(ASREngineBase):
     """Qwen3-ASR-0.6B OpenVINO INT8 引擎（stateful decoder）。"""
 
@@ -46,16 +62,16 @@ class OpenVINO06BEngine(ASREngineBase):
 
         cache_dir = model_dir / "ov_cache"
         cache_dir.mkdir(parents=True, exist_ok=True)
-        core.set_property({"CACHE_DIR": str(cache_dir)})
+        core.set_property({"CACHE_DIR": _safe_ov_path(cache_dir)})
 
         self.audio_enc = core.compile_model(
-            ov_dir / "audio_encoder_model.xml", device
+            _safe_ov_path(ov_dir / "audio_encoder_model.xml"), device
         )
         self.embedder = core.compile_model(
-            ov_dir / "thinker_embeddings_model.xml", device
+            _safe_ov_path(ov_dir / "thinker_embeddings_model.xml"), device
         )
         dec_comp = core.compile_model(
-            ov_dir / "decoder_model.xml", device
+            _safe_ov_path(ov_dir / "decoder_model.xml"), device
         )
         self.dec_req = dec_comp.create_infer_request()
 
@@ -171,19 +187,19 @@ class OpenVINO17BEngine(ASREngineBase):
 
         cache_dir = model_dir / "ov_cache"
         cache_dir.mkdir(parents=True, exist_ok=True)
-        core.set_property({"CACHE_DIR": str(cache_dir)})
+        core.set_property({"CACHE_DIR": _safe_ov_path(cache_dir)})
 
         self.audio_enc = core.compile_model(
-            kv_dir / "audio_encoder_model.xml", device
+            _safe_ov_path(kv_dir / "audio_encoder_model.xml"), device
         )
         self.embedder = core.compile_model(
-            kv_dir / "thinker_embeddings_model.xml", device
+            _safe_ov_path(kv_dir / "thinker_embeddings_model.xml"), device
         )
         self.pf_model = core.compile_model(
-            kv_dir / "decoder_prefill_kv_model.xml", device
+            _safe_ov_path(kv_dir / "decoder_prefill_kv_model.xml"), device
         )
         self.dc_model = core.compile_model(
-            kv_dir / "decoder_kv_model.xml", device
+            _safe_ov_path(kv_dir / "decoder_kv_model.xml"), device
         )
 
         # ── Processor ──────────────────────────────────────────────

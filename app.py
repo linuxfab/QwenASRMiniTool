@@ -36,13 +36,15 @@ from tkinter import filedialog, messagebox
 import numpy as np
 import customtkinter as ctk
 
-# ── chatllm 後端（可選，import 延遲到 load 時進行）────────────────────
+# ── 統一引擎模組 ──────────────────────────────────────────────────────
+from engine import create_engine
+
+# ── chatllm Vulkan 裝置偵測（可選）────────────────────────────────────
 try:
-    from chatllm_engine import ChatLLMASREngine, detect_vulkan_devices
+    from chatllm_engine import detect_vulkan_devices
     _CHATLLM_AVAILABLE = True
 except Exception:
     _CHATLLM_AVAILABLE = False
-    ChatLLMASREngine   = None
     def detect_vulkan_devices(_): return []
 
 # ── 路徑 ──────────────────────────────────────────────
@@ -77,383 +79,9 @@ from asr_utils import (
 
 
 
-# 全域：是否輸出簡體中文（True = 跳過 OpenCC 繁化）
-_g_output_simplified: bool = False
-
 # ══════════════════════════════════════════════════════
-# ASR 引擎
+# （ASREngine / ASREngine1p7B 已搬移至 engine/ 模組）
 # ══════════════════════════════════════════════════════
-
-class ASREngine:
-    """封裝所有模型。transcribe() 加互斥鎖，多執行緒安全。"""
-
-    max_chunk_secs: int = 30   # 每段最長音訊（秒），子類別可覆寫
-
-    def __init__(self):
-        self.ready       = False
-        self._lock       = threading.Lock()
-        self.vad_sess    = None
-        self.audio_enc   = None
-        self.embedder    = None
-        self.dec_req     = None
-        self.processor   = None   # LightProcessor（不含 torch）
-        self.pad_id      = None
-        self.cc          = None
-        self.diar_engine = None   # DiarizationEngine（可選）
-
-    def load(self, device: str = "CPU", model_dir: Path = None, cb=None):
-        """從背景執行緒呼叫。cb(msg) 用於更新 UI 狀態。"""
-        import onnxruntime as ort
-        import openvino as ov
-        import opencc
-        from processor_numpy import LightProcessor
-
-        if model_dir is None:
-            model_dir = _DEFAULT_MODEL_DIR
-        ov_dir   = model_dir / "qwen3_asr_int8"
-        vad_path = model_dir / "silero_vad_v4.onnx"
-
-        def _s(msg):
-            if cb: cb(msg)
-
-        _s("載入 VAD 模型…")
-        self.vad_sess = ort.InferenceSession(
-            str(vad_path), providers=["CPUExecutionProvider"]
-        )
-
-        _s("載入說話者分離模型…")
-        try:
-            from diarize import DiarizationEngine
-            diar_dir = model_dir / "diarization"
-            eng = DiarizationEngine(diar_dir)
-            self.diar_engine = eng if eng.ready else None
-        except Exception:
-            self.diar_engine = None
-
-        _s(f"編譯 ASR 模型（{device}）…")
-        core = ov.Core()
-        
-        # 建立快取目錄加速載入
-        cache_dir = model_dir / "ov_cache"
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        core.set_property({'CACHE_DIR': str(cache_dir)})
-
-        self.audio_enc = core.compile_model(str(ov_dir / "audio_encoder_model.xml"),      device)
-        self.embedder  = core.compile_model(str(ov_dir / "thinker_embeddings_model.xml"), device)
-        dec_comp       = core.compile_model(str(ov_dir / "decoder_model.xml"),            device)
-        self.dec_req   = dec_comp.create_infer_request()
-
-        _s("載入 Processor（純 numpy）…")
-        self.processor = LightProcessor(ov_dir)
-        self.pad_id    = self.processor.pad_id
-        self.cc        = opencc.OpenCC("s2twp")
-        self.ready     = True
-        _s(f"編譯完成（{device}）")
-
-    def transcribe(
-        self,
-        audio: np.ndarray,
-        max_tokens: int = 300,
-        language: str | None = None,
-        context: str | None = None,
-    ) -> str:
-        """將 16kHz float32 音訊轉錄為繁體中文。
-        language : 強制語系（如 "Chinese"），None 表示自動偵測
-        context  : 辨識提示（歌詞/關鍵字），放入 system message
-        """
-        with self._lock:
-            # ── 前處理（純 numpy，不需 torch）────────────────────────
-            mel, ids = self.processor.prepare(audio, language=language, context=context)
-
-            # ── 音頻編碼 + 文字 Embedding ────────────────────────────
-            ae = list(self.audio_enc({"mel": mel}).values())[0]
-            te = list(self.embedder({"input_ids": ids}).values())[0]
-
-            # ── 音頻特徵填入音頻 pad 位置 ─────────────────────────────
-            combined = te.copy()
-            mask = ids[0] == self.pad_id
-            np_ = int(mask.sum()); na = ae.shape[1]
-            if np_ != na:
-                mn = min(np_, na)
-                combined[0, np.where(mask)[0][:mn]] = ae[0, :mn]
-            else:
-                combined[0, mask] = ae[0]
-
-            # ── Decoder 自回歸生成 ────────────────────────────────────
-            L   = combined.shape[1]
-            pos = np.arange(L, dtype=np.int64)[np.newaxis, :]
-            self.dec_req.reset_state()
-            out    = self.dec_req.infer({0: combined, "position_ids": pos})
-            logits = list(out.values())[0]
-
-            eos = self.processor.eos_id
-            eot = self.processor.eot_id
-            gen: list[int] = []
-            nxt = int(np.argmax(logits[0, -1, :])); cur = L
-            while nxt not in (eos, eot) and len(gen) < max_tokens:
-                gen.append(nxt)
-                emb = list(self.embedder(
-                    {"input_ids": np.array([[nxt]], dtype=np.int64)}
-                ).values())[0]
-                out    = self.dec_req.infer(
-                    {0: emb, "position_ids": np.array([[cur]], dtype=np.int64)}
-                )
-                logits = list(out.values())[0]
-                nxt = int(np.argmax(logits[0, -1, :])); cur += 1
-
-            # ── 解碼（純 Python BPE decode）──────────────────────────
-            raw = self.processor.decode(gen)
-            if "<asr_text>" in raw:
-                raw = raw.split("<asr_text>", 1)[1]
-            text = raw.strip()
-            return text if _g_output_simplified else self.cc.convert(text)
-
-    def _enforce_chunk_limit(
-        self,
-        groups: list[tuple[float, float, np.ndarray, "str | None"]],
-    ) -> list[tuple[float, float, np.ndarray, "str | None"]]:
-        """將超過 max_chunk_secs 的音訊段落切分為等長子片段。
-
-        不論是說話者分離路徑或 VAD 單段路徑，都可能產生比模型
-        輸入長度（max_chunk_secs）更長的 chunk。若不切分，
-        _extract_mel() 會靜默截斷尾段，造成掉字。
-        """
-        max_samples = self.max_chunk_secs * SAMPLE_RATE
-        result = []
-        for t0, t1, chunk, spk in groups:
-            if len(chunk) <= max_samples:
-                result.append((t0, t1, chunk, spk))
-            else:
-                pos = 0
-                while pos < len(chunk):
-                    piece = chunk[pos: pos + max_samples]
-                    if len(piece) < SAMPLE_RATE:   # 不足 1 秒的殘餘片段跳過
-                        break
-                    piece_t0 = t0 + pos / SAMPLE_RATE
-                    piece_t1 = min(t1, piece_t0 + len(piece) / SAMPLE_RATE)
-                    result.append((piece_t0, piece_t1, piece, spk))
-                    pos += max_samples
-        return result
-
-    def process_file(
-        self,
-        audio_path: Path,
-        progress_cb=None,
-        language: str | None = None,
-        context: str | None = None,
-        diarize: bool = False,
-        n_speakers: int | None = None,
-    ) -> Path | None:
-        """音檔 → SRT，回傳 SRT 路徑。
-        language   : 強制語系（如 "Chinese"），None 表示自動偵測
-        context    : 辨識提示（歌詞/關鍵字），放入 system message
-        diarize    : True 時用說話者分離取代 VAD，SRT 加說話者前綴
-        n_speakers : 指定說話者人數（None=自動偵測）
-        """
-        from ffmpeg_utils import decode_audio_to_numpy, find_ffmpeg
-        ffmpeg_exe = find_ffmpeg()
-        if not ffmpeg_exe:
-            raise RuntimeError("找不到 ffmpeg，請重新啟動程式或手動安裝。")
-        audio = decode_audio_to_numpy(audio_path, ffmpeg_exe, sr=SAMPLE_RATE)
-
-        # ── 分段策略：說話者分離 vs 傳統 VAD ─────────────────────────
-        # groups_spk: [(g0_sec, g1_sec, audio_chunk, speaker_label | None), ...]
-        use_diar = diarize and self.diar_engine is not None and self.diar_engine.ready
-        if use_diar:
-            diar_segs = self.diar_engine.diarize(audio, n_speakers=n_speakers)
-            if not diar_segs:
-                return None
-            groups_spk = [
-                (t0, t1,
-                 audio[int(t0 * SAMPLE_RATE): int(t1 * SAMPLE_RATE)],
-                 spk)
-                for t0, t1, spk in diar_segs
-            ]
-        else:
-            vad_groups = detect_speech_groups(audio, self.vad_sess, self.max_chunk_secs)
-            if not vad_groups:
-                return None
-            groups_spk = [(g0, g1, chunk, None) for g0, g1, chunk in vad_groups]
-
-        # 強制切分超過 max_chunk_secs 的片段（兩條路徑都需要）
-        groups_spk = self._enforce_chunk_limit(groups_spk)
-
-        # ── ASR 逐段轉錄 ─────────────────────────────────────────────
-        all_subs: list[tuple[float, float, str, str | None]] = []
-        total = len(groups_spk)
-        for i, (g0, g1, chunk, spk) in enumerate(groups_spk):
-            if progress_cb:
-                spk_info = f" [{spk}]" if spk else ""
-                progress_cb(i, total,
-                            f"[{i+1}/{total}] {g0:.1f}s~{g1:.1f}s{spk_info}")
-            max_tok = 400 if language == "Japanese" else 300
-            text = self.transcribe(chunk, max_tokens=max_tok, language=language, context=context)
-            if not text:
-                continue
-            lines = split_to_lines(text)
-            all_subs.extend(
-                (s, e, line, spk) for s, e, line in assign_ts(lines, g0, g1)
-            )
-
-        if not all_subs:
-            return None
-
-        if progress_cb:
-            progress_cb(total, total, "寫入 SRT…")
-
-        out = SRT_DIR / (audio_path.stem + ".srt")
-        with open(out, "w", encoding="utf-8") as f:
-            for idx, (s, e, line, spk) in enumerate(all_subs, 1):
-                prefix = f"{spk}：" if spk else ""
-                f.write(f"{idx}\n{srt_ts(s)} --> {srt_ts(e)}\n{prefix}{line}\n\n")
-        return out
-
-
-# ══════════════════════════════════════════════════════
-# ASR 引擎 — 1.7B INT8 KV-cache 版本
-# ══════════════════════════════════════════════════════
-
-class ASREngine1p7B(ASREngine):
-    """
-    Qwen3-ASR-1.7B OpenVINO KV-cache 引擎。
-
-    模型目錄：ov_models/qwen3_asr_1p7b_kv_int8/
-      audio_encoder_model.xml       — mel(128,1000)  → audio_embeds(1,130,2048)
-      thinker_embeddings_model.xml  — input_ids      → token_embeds
-      decoder_prefill_kv_model.xml  — prefill pass   → logit + past_keys + past_vals
-      decoder_kv_model.xml          — decode step    → logit + new_keys  + new_vals
-    """
-
-    _OV_SUBDIR     = "qwen3_asr_1p7b_kv_int8"
-    max_chunk_secs = 10   # audio_encoder 匯出固定 T=1000（10s）
-
-    def __init__(self):
-        super().__init__()
-        self.pf_model = None   # compiled prefill model
-        self.dc_model = None   # compiled decode-step model
-
-    def load(self, device: str = "CPU", model_dir: Path = None, cb=None):
-        import onnxruntime as ort
-        import openvino as ov
-        import opencc
-        from processor_numpy import LightProcessor
-
-        if model_dir is None:
-            model_dir = _DEFAULT_MODEL_DIR
-        kv_dir   = model_dir / self._OV_SUBDIR
-        vad_path = model_dir / "silero_vad_v4.onnx"
-
-        def _s(msg):
-            if cb: cb(msg)
-
-        _s("載入 VAD 模型…")
-        self.vad_sess = ort.InferenceSession(
-            str(vad_path), providers=["CPUExecutionProvider"]
-        )
-
-        _s("載入說話者分離模型…")
-        try:
-            from diarize import DiarizationEngine
-            diar_dir = model_dir / "diarization"
-            eng = DiarizationEngine(diar_dir)
-            self.diar_engine = eng if eng.ready else None
-        except Exception:
-            self.diar_engine = None
-
-        _s(f"編譯 1.7B ASR 模型（{device}）…")
-        core = ov.Core()
-        
-        # 建立快取目錄加速載入
-        cache_dir = model_dir / "ov_cache"
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        core.set_property({'CACHE_DIR': str(cache_dir)})
-
-        self.audio_enc = core.compile_model(str(kv_dir / "audio_encoder_model.xml"),      device)
-        self.embedder  = core.compile_model(str(kv_dir / "thinker_embeddings_model.xml"), device)
-        self.pf_model  = core.compile_model(str(kv_dir / "decoder_prefill_kv_model.xml"), device)
-        self.dc_model  = core.compile_model(str(kv_dir / "decoder_kv_model.xml"),         device)
-        self.dec_req   = None   # 1.7B 不使用 stateful decoder
-
-        _s("載入 Processor（純 numpy，1.7B 10s）…")
-        self.processor = LightProcessor(kv_dir)
-        self.pad_id    = self.processor.pad_id
-        self.cc        = opencc.OpenCC("s2twp")
-        self.ready     = True
-        _s(f"1.7B 編譯完成（{device}）")
-
-    def transcribe(
-        self,
-        audio: np.ndarray,
-        max_tokens: int = 256,
-        language: str | None = None,
-        context: str | None = None,
-    ) -> str:
-        """KV-cache 貪婪解碼：O(L²) prefill + O(n) decode。"""
-        with self._lock:
-            # 1. 前處理（10s 音訊）
-            mel, ids = self.processor.prepare(audio, language=language, context=context)
-            # audio_encoder 輸入 mel[0] 去除 batch dim → (128, 1000)
-            ae = list(self.audio_enc({"mel": mel[0]}).values())[0]   # (1, 130, 2048)
-            te = list(self.embedder({"input_ids": ids}).values())[0]  # (1, L, 2048)
-
-            # 2. 合併音頻特徵
-            combined = te.copy()
-            mask = ids[0] == self.pad_id
-            n_pad = int(mask.sum()); n_ae = ae.shape[1]
-            if n_pad != n_ae:
-                mn = min(n_pad, n_ae)
-                combined[0, np.where(mask)[0][:mn]] = ae[0, :mn]
-            else:
-                combined[0, mask] = ae[0]
-
-            # 3. Prefill
-            seq_len = combined.shape[1]
-            pos_ids = np.arange(seq_len, dtype=np.int64)[np.newaxis, :]
-            pf_out  = self.pf_model({"input_embeds": combined, "position_ids": pos_ids})
-            pf_vals = list(pf_out.values())
-            logits  = pf_vals[0]   # (1, 1, vocab)
-            past_k  = pf_vals[1]   # (28, 1, 8, L, 128)
-            past_v  = pf_vals[2]
-
-            eos = self.processor.eos_id
-            eot = self.processor.eot_id
-            next_tok = int(np.argmax(logits[0, -1, :]))
-            if next_tok in (eos, eot):
-                return ""
-
-            gen     = [next_tok]
-            cur_pos = seq_len
-
-            # 4. Decode loop
-            for _ in range(max_tokens - 1):
-                new_ids = np.array([[next_tok]], dtype=np.int64)
-                new_emb = list(self.embedder({"input_ids": new_ids}).values())[0]
-                new_pos = np.array([[cur_pos]], dtype=np.int64)
-
-                dc_out  = self.dc_model({
-                    "new_embed":   new_emb,
-                    "new_pos":     new_pos,
-                    "past_keys":   past_k,
-                    "past_values": past_v,
-                })
-                dc_vals  = list(dc_out.values())
-                logits   = dc_vals[0]
-                past_k   = dc_vals[1]
-                past_v   = dc_vals[2]
-
-                next_tok = int(np.argmax(logits[0, -1, :]))
-                if next_tok in (eos, eot):
-                    break
-                gen.append(next_tok)
-                cur_pos += 1
-
-            # 5. 解碼
-            raw = self.processor.decode(gen)
-            if "<asr_text>" in raw:
-                raw = raw.split("<asr_text>", 1)[1]
-            text = raw.strip()
-            return text if _g_output_simplified else self.cc.convert(text)
-
 
 
 # ══════════════════════════════════════════════════════
@@ -482,7 +110,7 @@ class App(ctk.CTk):
         self.geometry("960x700")
         self.minsize(800, 580)
 
-        self.engine       = ASREngine()
+        self.engine       = None
         self._rt_mgr: RealtimeManager | None = None
         self._rt_log: list[str]              = []
         self._audio_file: Path | None        = None
@@ -1006,13 +634,10 @@ class App(ctk.CTk):
 
     def _on_chinese_mode_change(self, value: str):
         """輸出模式切換：繁體（OpenCC）or 簡體（直接輸出）。"""
-        global _g_output_simplified
-        _g_output_simplified = (value == "簡體")
-        self._patch_setting("output_simplified", _g_output_simplified)
-        # 同步更新 chatllm_engine 模組旗標（ChatLLM 後端使用）
-        if _CHATLLM_AVAILABLE:
-            import chatllm_engine as _ce
-            _ce._output_simplified = _g_output_simplified
+        is_simplified = (value == "簡體")
+        if self.engine:
+            self.engine.output_simplified = is_simplified
+        self._patch_setting("output_simplified", is_simplified)
 
     def _on_appearance_change(self, value: str):
         """主題切換：深色 🌑 or 淺色 ☀。"""
@@ -1089,13 +714,8 @@ class App(ctk.CTk):
 
         self._settings = settings
 
-        # 套用 UI 偏好（簡繁模式 + 外觀主題）
-        global _g_output_simplified
-        _g_output_simplified = settings.get("output_simplified", False)
-        # 同步 chatllm_engine 模組旗標
-        if _CHATLLM_AVAILABLE:
-            import chatllm_engine as _ce
-            _ce._output_simplified = _g_output_simplified
+        # 套用 simplied/traditional 偏好
+        self._output_simplified = settings.get("output_simplified", False)
         self.after(0, lambda s=settings: self._apply_ui_prefs(s))
 
         # 同步 device_combo 到已儲存的裝置
@@ -1449,10 +1069,11 @@ class App(ctk.CTk):
         import gc
 
         # ── 釋放舊引擎記憶體 ───────────────────────────────────────────
-        for attr in ("audio_enc", "embedder", "dec_req", "vad_sess",
-                     "pf_model", "dc_model", "_llm"):
-            if hasattr(self.engine, attr):
-                setattr(self.engine, attr, None)
+        if self.engine is not None:
+            for attr in ("audio_enc", "embedder", "dec_req", "vad_sess",
+                         "pf_model", "dc_model", "_llm"):
+                if hasattr(self.engine, attr):
+                    setattr(self.engine, attr, None)
         gc.collect()
 
         # ── 讀取設定：先用儲存的，再 fallback 至 UI 選擇 ───────────────
@@ -1531,7 +1152,9 @@ class App(ctk.CTk):
             if _m:
                 _vk_dev_id = int(_m.group(1))
 
-            self.engine = ChatLLMASREngine()
+
+            self.engine = create_engine("chatllm")
+            self.engine.output_simplified = getattr(self, '_output_simplified', False)
             try:
                 self.engine.load(
                     model_path  = model_path,
@@ -1573,7 +1196,9 @@ class App(ctk.CTk):
                         return
                     self.after(0, self._hide_dl_bar)
 
-            self.engine = ASREngine1p7B() if use_17b else ASREngine()
+            model_size_key = "1.7B" if use_17b else "0.6B"
+            self.engine = create_engine("openvino", model_size_key)
+            self.engine.output_simplified = getattr(self, '_output_simplified', False)
             try:
                 self.engine.load(device=ov_device, model_dir=model_dir, cb=self._set_status)
                 self.after(0, self._on_models_ready)
@@ -1764,7 +1389,8 @@ class App(ctk.CTk):
 
         self._settings = cur
 
-        self.engine.ready = False
+        if self.engine:
+            self.engine.ready = False
         self.convert_btn.configure(state="disabled")
         self.rt_start_btn.configure(state="disabled")
         self.reload_btn.configure(state="disabled")

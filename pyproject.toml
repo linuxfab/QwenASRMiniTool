@@ -34,3 +34,8 @@ explicit = true
 
 [tool.uv.sources]
 torch = { index = "pytorch-gpu" }
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+]

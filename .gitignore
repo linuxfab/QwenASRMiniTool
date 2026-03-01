@@ -24,6 +24,7 @@ ov_models/qwen3_asr_1p7b_kv/
 ov_models/qwen3_asr_1p7b_kv_int8/
 ov_models/qwen3_asr_1p7b_kv_int8_openvino_Scripts/
 ov_models/silero_vad*.onnx
+ov_models/ov_cache/
 onnx_models/
 GPUModel/
 GGUF/
@@ -50,8 +51,7 @@ installer/
 !build_venv.bat
 !start-gpu.bat
 
-# ── 開發/測試用腳本 ──────────────────────────────────
-test_*.py
+# ── 開發/測試用腳本（非 unit test）─────────────────────
 benchmark.py
 check_*.py
 export_onnx.*

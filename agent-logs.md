@@ -1,5 +1,18 @@
 # Agent 專案修改日誌
 
+* 更新日期時間：2026-03-01 12:30
+* 重點：架構重構 — 拆分 app.py、跨平台修復、新增單元測試
+* 影響：
+  * 新增 `onboarding.py`（~310 行）：從 `app.py` 提取初始設定引導畫面，`app.py` 從 1698 行降至 1220 行
+  * 修復 `ffmpeg_utils.py` 的 `get_audio_duration` 硬編碼 `ffprobe.exe`，改為 platform-aware（`sys.platform` 判斷 + `shutil.which` fallback）
+  * 更新 `.gitignore`：排除 `ov_models/ov_cache/`（避免 git push 上傳 GB 級 blob）；取消排除 `test_*.py`（允許 unit test 上版）
+  * 新增 `test_asr_utils.py`：22 個測試案例覆蓋 `srt_ts`、`split_to_lines`、`assign_ts`，包含邊界、CJK/英文混合、時間分配比例驗證
+  * 新增 `pytest` dev 依賴至 `pyproject.toml`
+  * 保留 `app-gpu.py`（使用獨立的 PyTorch/CUDA/ForcedAligner 路線，非 `app.py` 的複本）
+* 結果：`app.py` 減少 478 行，核心邏輯有自動化測試保護，跨平台部署不再因 `ffprobe.exe` 而失敗。
+* 更新者：antigravity agent
+
+---
 * 更新日期時間：2026-03-01 12:02
 * 重點：修復 4 項 bug 與改進 — _srt_ts NameError、硬編碼路徑、Thread Safety、即時字幕時間軸
 * 影響：

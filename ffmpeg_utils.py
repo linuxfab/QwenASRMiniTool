@@ -157,12 +157,18 @@ def get_audio_duration(
     ffmpeg_exe: Path | str,
 ) -> float:
     """使用 ffprobe 取得音訊長度 (秒)。若無 ffprobe 則以解碼計算。"""
-    ffprobe_exe = Path(ffmpeg_exe).parent / "ffprobe.exe"
-    
+    # 平台自適應：Windows 用 .exe，Linux/macOS 不加後綴
+    ffprobe_name = "ffprobe.exe" if sys.platform == "win32" else "ffprobe"
+    ffprobe_exe = Path(ffmpeg_exe).parent / ffprobe_name
     if not ffprobe_exe.exists():
-        # Fallback
-        audio = decode_audio_to_numpy(audio_path, ffmpeg_exe)
-        return len(audio) / 16000.0
+        # fallback: 嘗試系統 PATH
+        ffprobe_which = shutil.which("ffprobe")
+        if ffprobe_which:
+            ffprobe_exe = Path(ffprobe_which)
+        else:
+            # 最終 fallback: 完整解碼計算長度
+            audio = decode_audio_to_numpy(audio_path, ffmpeg_exe)
+            return len(audio) / 16000.0
 
     cmd = [
         str(ffprobe_exe),

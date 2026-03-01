@@ -1,0 +1,23 @@
+# .agignore 範例
+# 排除 Python 環境
+.venv/
+venv/
+__pycache__/
+# 排除 Go 編譯物
+vendor/
+bin/
+# 排除數據與日誌
+*.log
+data/*.csv
+# 排除 Pytest 測試暫存
+.pytest_cache/
+# 排除日誌
+logs/
+# 排除資料庫
+*.db
+# 排除備份
+backups/
+
+downloads/
+
+ov_models/

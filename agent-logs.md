@@ -1,5 +1,17 @@
 # Agent 專案修改日誌
 
+* 更新日期時間：2026-03-01 12:02
+* 重點：修復 4 項 bug 與改進 — _srt_ts NameError、硬編碼路徑、Thread Safety、即時字幕時間軸
+* 影響：
+  * 修復 `app.py` 與 `app-gpu.py` 的 `_on_rt_save` 中使用未定義的 `_srt_ts` 函式（應為 `srt_ts`），此 bug 會在儲存即時字幕時直接 crash
+  * 修復 `generate_prompt_template.py` 硬編碼絕對路徑，改為相對路徑並支援 CLI 引數覆寫
+  * `app.py` 新增 `threading.Lock`（`_convert_lock` / `_rt_lock`）保護 `_converting` 和 `_rt_log` 的多線程存取
+  * `asr_utils.py` 中 `RealtimeManager` 新增 chunk 計數器追蹤錄音累計時間，`on_text` 回呼簽名變更為 `(text, start_sec, end_sec)`
+  * `app.py` / `app-gpu.py` 的 `_rt_log` 型別從 `list[str]` 改為 `list[tuple[str, float, float]]`，`_on_rt_save` 使用真實時間軸寫入 SRT
+* 結果：修復 2 個會 crash 的 bug，消除 3 處 race condition 風險，即時字幕 SRT 時間軸從假的固定 5 秒間隔改為基於 VAD 的真實錄音位置。
+* 更新者：antigravity agent
+
+---
 * 更新日期時間：2026-02-28 14:06
 * 重點：將 engine-decoupling 功能合併回主分支
 * 影響：合併 app.py, engine 等多個模組重構程式碼，統一 API 介面。

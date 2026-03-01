@@ -112,10 +112,12 @@ class App(ctk.CTk):
 
         self.engine       = None
         self._rt_mgr: RealtimeManager | None = None
-        self._rt_log: list[str]              = []
+        self._rt_log: list[tuple[str, float, float]] = []   # (text, start_sec, end_sec)
+        self._rt_lock                        = threading.Lock()  # 保護 _rt_log
         self._audio_file: Path | None        = None
         self._srt_output: Path | None        = None
         self._converting                     = False
+        self._convert_lock                   = threading.Lock()  # 保護 _converting
         self._dev_idx_map: dict[str, int]    = {}
         self._model_dir: Path | None         = None   # 使用者選定的模型路徑
         self._lang_list: list[str]           = []     # 載入後填入
@@ -1454,8 +1456,9 @@ class App(ctk.CTk):
         )
 
     def _on_convert(self):
-        if self._converting:
-            return
+        with self._convert_lock:
+            if self._converting:
+                return
         path = Path(self.file_entry.get().strip())
         if not path.exists():
             messagebox.showwarning("提示", "找不到檔案，請重新選擇")
@@ -1486,7 +1489,8 @@ class App(ctk.CTk):
 
     def _do_start_convert(self):
         """ffmpeg 確認後（或非影片檔案時）實際啟動轉換執行緒。"""
-        self._converting = True
+        with self._convert_lock:
+            self._converting = True
         self.convert_btn.configure(state="disabled", text="轉換中…")
         self.prog_bar.set(0)
         self._file_log_clear()
@@ -1563,7 +1567,8 @@ class App(ctk.CTk):
                     tmp_wav.unlink()
                 except Exception:
                     pass
-            self._converting = False
+            with self._convert_lock:
+                self._converting = False
             self.after(0, lambda: self.convert_btn.configure(
                 state="normal", text="▶  開始轉換"
             ))
@@ -1619,8 +1624,9 @@ class App(ctk.CTk):
         self.rt_start_btn.configure(state="normal")
         self.rt_stop_btn.configure(state="disabled")
 
-    def _on_rt_text(self, text: str):
-        self._rt_log.append(text)
+    def _on_rt_text(self, text: str, start_sec: float, end_sec: float):
+        with self._rt_lock:
+            self._rt_log.append((text, start_sec, end_sec))
         def _do():
             ts = datetime.now().strftime("%H:%M:%S")
             self.rt_textbox.configure(state="normal")
@@ -1633,23 +1639,23 @@ class App(ctk.CTk):
         self.after(0, lambda: self.rt_status_lbl.configure(text=msg))
 
     def _on_rt_clear(self):
-        self._rt_log.clear()
+        with self._rt_lock:
+            self._rt_log.clear()
         self.rt_textbox.configure(state="normal")
         self.rt_textbox.delete("1.0", "end")
         self.rt_textbox.configure(state="disabled")
 
     def _on_rt_save(self):
-        if not self._rt_log:
+        with self._rt_lock:
+            log_snapshot = list(self._rt_log)
+        if not log_snapshot:
             messagebox.showinfo("提示", "目前沒有字幕內容可儲存")
             return
         ts  = datetime.now().strftime("%Y%m%d_%H%M%S")
         out = SRT_DIR / f"realtime_{ts}.srt"
-        t   = 0.0
         with open(out, "w", encoding="utf-8") as f:
-            for idx, line in enumerate(self._rt_log, 1):
-                end = t + 5.0
-                f.write(f"{idx}\n{_srt_ts(t)} --> {_srt_ts(end)}\n{line}\n\n")
-                t = end + 0.1
+            for idx, (text, start, end) in enumerate(log_snapshot, 1):
+                f.write(f"{idx}\n{srt_ts(start)} --> {srt_ts(end)}\n{text}\n\n")
         messagebox.showinfo("儲存完成", f"已儲存至：\n{out}")
         os.startfile(str(SRT_DIR))
 
@@ -1657,7 +1663,7 @@ class App(ctk.CTk):
 
     def _on_close(self):
         # 轉換進行中：請使用者確認
-        if self._converting:
+        if self._converting:  # 讀取 bool 是原子操作，此處不需 lock
             if not messagebox.askyesno(
                 "確認關閉",
                 "音訊轉換正在進行中。\n確定要強制關閉嗎？（目前進度將遺失）",

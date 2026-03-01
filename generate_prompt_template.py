@@ -4,14 +4,16 @@
 輸出的 JSON 讓 processor_numpy.py 不需任何 torch/transformers 即可運作。
 
 用法：
-    python generate_prompt_template.py
+    python generate_prompt_template.py [模型目錄]
+    # 若不指定，預設使用 <腳本目錄>/ov_models/qwen3_asr_int8
 """
 import json
+import sys
 import numpy as np
 from pathlib import Path
 
 BASE_DIR = Path(__file__).parent
-OV_DIR   = Path(r"D:\googledrive\MyData\antigravity_workspace\QwenASRMiniTool\QwenASRMiniTool\ov_models\qwen3_asr_int8")
+OV_DIR   = Path(sys.argv[1]) if len(sys.argv) > 1 else BASE_DIR / "ov_models" / "qwen3_asr_int8"
 OUT_PATH = BASE_DIR / "prompt_template.json"
 
 print("載入 qwen_asr processor…")

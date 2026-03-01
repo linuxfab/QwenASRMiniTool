@@ -219,6 +219,9 @@ class RealtimeManager:
       - vad_sess : ONNX InferenceSession（Silero VAD）
       - transcribe(audio, max_tokens=..., language=..., context=...) -> str
       - max_chunk_secs : int（可選，預設 19）
+
+    on_text 回呼簽名：on_text(text: str, start_sec: float, end_sec: float)
+      start_sec / end_sec 為相對於錄音開始的真實秒數。
     """
 
     def __init__(
@@ -232,7 +235,7 @@ class RealtimeManager:
     ):
         self.asr       = asr
         self.dev_idx   = device_idx
-        self.on_text   = on_text    # callback(text: str)
+        self.on_text   = on_text    # callback(text: str, start_sec: float, end_sec: float)
         self.on_status = on_status  # callback(msg: str)
         self.language  = language
         self.context   = context
@@ -277,12 +280,17 @@ class RealtimeManager:
         sr  = np.array(SAMPLE_RATE, dtype=np.int64)
         buf: list[np.ndarray] = []
         sil = 0
+        # 累計取樣數 → 真實時間（每收到一個 chunk +VAD_CHUNK）
+        total_chunks   = 0     # 自錄音開始的總 chunk 數
+        buf_start_chunk = 0    # 當前 buf 第一個 chunk 的全域位置
 
         while self._running:
             try:
                 chunk = self._q.get(timeout=0.1)
             except queue.Empty:
                 continue
+
+            total_chunks += 1
 
             out, h, c = self.asr.vad_sess.run(
                 None,
@@ -291,6 +299,8 @@ class RealtimeManager:
             prob = float(out[0, 0])
 
             if prob >= VAD_THRESHOLD:
+                if not buf:
+                    buf_start_chunk = total_chunks - 1
                 buf.append(chunk); sil = 0
             elif buf:
                 buf.append(chunk); sil += 1
@@ -298,6 +308,9 @@ class RealtimeManager:
                 if sil >= RT_SILENCE_CHUNKS or len(buf) >= rt_max_buf:
                     audio = np.concatenate(buf)
                     n = max(1, len(audio) // SAMPLE_RATE) * SAMPLE_RATE
+                    # 計算真實時間軸
+                    start_sec = buf_start_chunk * VAD_CHUNK / SAMPLE_RATE
+                    end_sec   = start_sec + n / SAMPLE_RATE
                     _max_tok = 400 if self.language == "Japanese" else 300
                     try:
                         text = self.asr.transcribe(
@@ -307,7 +320,7 @@ class RealtimeManager:
                             context=self.context,
                         )
                         if text:
-                            self.on_text(text)
+                            self.on_text(text, start_sec, end_sec)
                     except Exception as _e:
                         self.on_status(f"⚠ 轉錄錯誤：{_e}")
                     buf = []; sil = 0

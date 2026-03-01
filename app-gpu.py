@@ -487,7 +487,7 @@ class App(ctk.CTk):
 
         self.engine       = GPUASREngine()
         self._rt_mgr: RealtimeManager | None = None
-        self._rt_log: list[str]              = []
+        self._rt_log: list[tuple[str, float, float]] = []   # (text, start_sec, end_sec)
         self._audio_file: Path | None        = None
         self._srt_output: Path | None        = None
         self._converting                     = False
@@ -1198,8 +1198,8 @@ class App(ctk.CTk):
         self.rt_start_btn.configure(state="normal")
         self.rt_stop_btn.configure(state="disabled")
 
-    def _on_rt_text(self, text: str):
-        self._rt_log.append(text)
+    def _on_rt_text(self, text: str, start_sec: float, end_sec: float):
+        self._rt_log.append((text, start_sec, end_sec))
         def _do():
             ts = datetime.now().strftime("%H:%M:%S")
             self.rt_textbox.configure(state="normal")
@@ -1222,12 +1222,9 @@ class App(ctk.CTk):
             messagebox.showinfo("提示", "目前沒有字幕內容可儲存"); return
         ts  = datetime.now().strftime("%Y%m%d_%H%M%S")
         out = SRT_DIR / f"realtime_{ts}.srt"
-        t   = 0.0
         with open(out, "w", encoding="utf-8") as f:
-            for idx, line in enumerate(self._rt_log, 1):
-                end = t + 5.0
-                f.write(f"{idx}\n{_srt_ts(t)} --> {_srt_ts(end)}\n{line}\n\n")
-                t = end + 0.1
+            for idx, (text, start, end) in enumerate(self._rt_log, 1):
+                f.write(f"{idx}\n{srt_ts(start)} --> {srt_ts(end)}\n{text}\n\n")
         messagebox.showinfo("儲存完成", f"已儲存至：\n{out}")
         os.startfile(str(SRT_DIR))
 

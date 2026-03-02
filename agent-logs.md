@@ -1,5 +1,15 @@
 # Agent 專案修改日誌
 
+* 更新日期時間：2026-03-02 23:35
+* 重點：Phase 3 — 刪除冗餘 Streamlit 前端、修復 main.py 入口點
+* 影響：
+  * 刪除 `streamlit_app.py`（404 行）：依賴 `app-gpu.py` 的 `GPUASREngine`，且無任何啟動腳本引用
+  * `streamlit_vulkan.py` 保留為唯一 Streamlit 前端（已被 `start-gpu.bat` 和 `setting.py` 引用）
+  * 修復 `main.py`：從空殼（`print("Hello")`）改為真正的入口點（`from app import main`）
+* 結果：消除 404 行冗餘程式碼。51 個測試全部通過。
+* 更新者：antigravity agent
+
+---
 * 更新日期時間：2026-03-02 23:26
 * 重點：增加測試覆蓋率 — 新增 downloader.py 和 engine/factory.py 測試
 * 影響：

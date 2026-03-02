@@ -1,5 +1,14 @@
 # Agent 專案修改日誌
 
+* 更新日期時間：2026-03-02 23:26
+* 重點：增加測試覆蓋率 — 新增 downloader.py 和 engine/factory.py 測試
+* 影響：
+  * 新增 `test_downloader.py`：22 個測試覆蓋 `_file_is_real`（LFS pointer 偵測 7 cases）、`_get_paths`（2 cases）、`quick_check` / `quick_check_1p7b` / `quick_check_diarization`（7 cases，含 LFS pointer 滲透測試）、`_sha256`（3 cases）
+  * 新增 `test_factory.py`：6 個測試覆蓋 `create_engine()` 的所有後端路由（openvino 0.6B/1.7B、chatllm、cuda、預設值）
+* 結果：測試覆蓋率從 3 個函式（24 tests）擴展到 11 個函式（51 tests，全部通過，0.52s）。
+* 更新者：antigravity agent
+
+---
 * 更新日期時間：2026-03-02 23:25
 * 重點：程式碼優化 Phase 1 — 共用程式碼提取、刪除殘留重複
 * 影響：

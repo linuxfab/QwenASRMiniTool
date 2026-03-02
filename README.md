@@ -1,7 +1,7 @@
 # Qwen3 ASR MiniTool
 
 📦 **GitHub**: [linuxfab/QwenASRMiniTool](https://github.com/linuxfab/QwenASRMiniTool)
-🕐 **最後更新**: 2026-03-02
+🕐 **最後更新**: 2026-03-03
 
 本地語音辨識字幕生成工具。基於 Qwen3-ASR-0.6B 模型，
 使用 OpenVINO INT8 量化推理，**EXE 版本不使用 GPU**，純 CPU 即可執行。
@@ -124,8 +124,8 @@ uv run app.py  # 或執行其它腳本
 
 ![Streamlit 前端介面](Readme/readme08.jpg)
 
-提供標準 Streamlit 前端，現在可於 GPU 版本啟動時選擇 Streamlit 前端，方便在內網中搭建服務使用，目前預設是使用此前端，選擇 2 可以切換為原來的 Tkinter 前端。
-如果只想使用 Tkinter 前端，可以直接執行 `app-gpu.py`。
+提供標準 Streamlit 前端，現在可於 GPU 版本啟動時選擇 Streamlit 前端，方便在內網中搭建服務使用。
+目前預設是使用此前端，選擇 2 可以切換為原來的 Tkinter 前端。
 
 ![啟動選擇畫面](Readme/readme09.jpg)
 
@@ -331,7 +331,9 @@ onboarding.py           # 首次啟動引導畫面（硬體偵測 + 後端選擇
 setting.py              # 設定分頁（深淺色模式、語系、模型路徑、ffmpeg 設定）
 batch_tab.py            # 批次辨識分頁（大量音訊 / 影片檔案排程處理）
 ffmpeg_utils.py         # ffmpeg 偵測、影片音軌提取、一鍵下載對話框
-subtitle_editor.py      # 字幕驗證與編輯視窗（時間軸拖曳、播放）
+subtitle_editor.py      # 向後相容 re-export（實際已拆分為下方兩檔）
+subtitle_detail_editor.py   # 字幕詳細時間軸編輯視窗（拖曳調整、播放）
+subtitle_editor_window.py   # 字幕驗證與編輯主視窗（分頁、草稿、SRT 輸出）
 chatllm_engine.py       # Vulkan GPU 推理 Runner（chatllm.cpp subprocess / DLL 包裝）
 downloader.py           # 模型完整性檢查與自動下載（含 LFS 指標檔偵測）
 processor_numpy.py      # 純 numpy Mel / BPE 處理器（不依賴 torch）

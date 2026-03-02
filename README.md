@@ -1,5 +1,8 @@
 # Qwen3 ASR MiniTool
 
+📦 **GitHub**: [linuxfab/QwenASRMiniTool](https://github.com/linuxfab/QwenASRMiniTool)
+🕐 **最後更新**: 2026-03-02
+
 本地語音辨識字幕生成工具。基於 Qwen3-ASR-0.6B 模型，
 使用 OpenVINO INT8 量化推理，**EXE 版本不使用 GPU**，純 CPU 即可執行。
 此版本辨識率普通，主要是要你同事、你同學，拷貝給你阿嬤都能免費進行語音辨識。
@@ -320,33 +323,42 @@ python generate_prompt_template.py
 ### 架構說明
 
 ```
+main.py                 # 應用入口點（呼叫 app.main()）
 app.py                  # CustomTkinter GUI 主程式（Basic / Portable EXE）
+config.py               # 統一設定檔管理（SettingsSchema dataclass + AppSettings 讀寫器）
+asr_utils.py            # ASR 共用常數與工具函式（VAD、斷句、SRT 格式、即時管理）
+onboarding.py           # 首次啟動引導畫面（硬體偵測 + 後端選擇 + 模型下載）
 setting.py              # 設定分頁（深淺色模式、語系、模型路徑、ffmpeg 設定）
 batch_tab.py            # 批次辨識分頁（大量音訊 / 影片檔案排程處理）
 ffmpeg_utils.py         # ffmpeg 偵測、影片音軌提取、一鍵下載對話框
 subtitle_editor.py      # 字幕驗證與編輯視窗（時間軸拖曳、播放）
-chatllm_engine.py       # Vulkan GPU 推理引擎（chatllm.cpp subprocess 包裝）
-app-gpu.py              # PyTorch CUDA 版本（維護模式，不再主動更新）
-start-gpu.bat           # PyTorch GPU 啟動器（維護模式）
+chatllm_engine.py       # Vulkan GPU 推理 Runner（chatllm.cpp subprocess / DLL 包裝）
 downloader.py           # 模型完整性檢查與自動下載（含 LFS 指標檔偵測）
 processor_numpy.py      # 純 numpy Mel / BPE 處理器（不依賴 torch）
 diarize.py              # 說話者分離引擎（兩階段聚類，不依賴 torch）
+streamlit_vulkan.py     # Streamlit Web 前端（唯一 Streamlit 介面）
 generate_prompt_template.py  # 從原始模型提取 prompt 模板
-chatllm/                # Vulkan 推理 DLL 與執行檔（非 EXE 內部，需另行提供）
-  libchatllm.dll             # 主要推理引擎（chatllm.cpp 預編譯）
-  ggml-vulkan.dll            # Vulkan GPU 後端
-  ggml-cpu-*.dll             # CPU fallback 變體
-  main.exe                   # GPU 偵測與推理執行檔
+engine/                 # ASR 引擎抽象層
+  base.py                   # ASREngineBase 統一介面（VAD/Diarize/OpenCC/process_file）
+  factory.py                # create_engine() 工廠函式（openvino/chatllm/cuda）
+  openvino_backend.py       # OpenVINO INT8 後端（0.6B / 1.7B KV-Cache）
+  vulkan_backend.py         # Vulkan GPU 後端（chatllm.cpp）
+  cuda_backend.py           # PyTorch CUDA 後端（含 ForcedAligner）
+test_asr_utils.py       # 單元測試：斷句、SRT 格式、時間分配
+test_downloader.py      # 單元測試：LFS 偵測、模型檢查、SHA256
+test_factory.py         # 單元測試：引擎工廠路由邏輯
+test_config.py          # 單元測試：設定檔讀寫
+app-gpu.py              # PyTorch CUDA 版本（維護模式，不再主動更新）
+start-gpu.bat           # PyTorch GPU 啟動器（維護模式）
+chatllm/                # Vulkan 推理 DLL 與執行檔
 ffmpeg/
-  ffmpeg.exe                 # 影片音軌提取工具（首次使用影片時自動下載，~55 MB）
+  ffmpeg.exe                 # 影片音軌提取工具（首次使用影片時自動下載）
 ov_models/
   mel_filters.npy            # 預計算 Mel 濾波器
   silero_vad_v4.onnx         # VAD 靜音偵測模型
   qwen3_asr_int8/            # 0.6B OpenVINO INT8（自動下載，~1.2 GB）
   qwen3_asr_1p7b_kv_int8/   # 1.7B OpenVINO INT8 KV-Cache（按需下載，~4.3 GB）
   diarization/               # 說話者分離 ONNX 模型（首次使用時下載，~32 MB）
-    segmentation-community-1.onnx
-    embedding_model.onnx
 GPUModel/
   qwen3-asr-1.7b.bin         # 1.7B GGUF bin（Vulkan 用，按需下載，~2.3 GB）
 ```

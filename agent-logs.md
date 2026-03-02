@@ -1,5 +1,15 @@
 # Agent 專案修改日誌
 
+* 更新日期時間：2026-03-02 23:58
+* 重點：#10 拆分 `subtitle_editor.py`（1405 行 → 三檔）
+* 影響：
+  * 新增 `subtitle_detail_editor.py`（526 行）：SubtitleDetailEditor class
+  * 新增 `subtitle_editor_window.py`（895 行）：SubtitleEditorWindow class
+  * `subtitle_editor.py` 縮減為 12 行 re-export，向後相容 `from subtitle_editor import ...`
+* 結果：兩個 class 各自獨立維護，import 不受影響。59 個測試全部通過。
+* 更新者：antigravity agent
+
+---
 * 更新日期時間：2026-03-02 23:48
 * 重點：#11 設定檔管理統一 — 新增 `config.py`，`app.py` 改用統一模組
 * 影響：

@@ -54,7 +54,7 @@ if getattr(sys, "frozen", False):
 else:
     BASE_DIR = Path(__file__).parent
 _DEFAULT_MODEL_DIR = BASE_DIR / "ov_models"
-SETTINGS_FILE      = BASE_DIR / "settings.json"
+from config import AppSettings
 SRT_DIR            = BASE_DIR / "subtitles"
 _CHATLLM_DIR       = BASE_DIR / "chatllm"
 # .bin 優先找 ov_models/（開發期），再找 GPUModel/（打包後下載位置）
@@ -123,6 +123,7 @@ class App(ctk.CTk):
         self._lang_list: list[str]           = []     # 載入後填入
         self._selected_language: str | None  = None   # 目前選定的語系
         self._settings: dict                 = {}     # 目前生效的設定
+        self._cfg                            = AppSettings()   # 統一設定讀寫
         self._all_devices: dict              = {}     # 偵測到的所有裝置
         self._file_hint: str | None          = None   # 音檔轉字幕 hint
         self._file_diarize: bool             = False  # 說話者分離開關
@@ -592,13 +593,7 @@ class App(ctk.CTk):
     # ── 設定檔讀寫（記住模型路徑）──────────────────────────────────────
 
     def _load_settings(self) -> dict:
-        try:
-            if SETTINGS_FILE.exists():
-                with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
-                    return json.load(f)
-        except Exception:
-            pass
-        return {}
+        return self._cfg.load()
 
     def _save_settings(self, settings: dict):
         """儲存完整設定 dict 到 settings.json。
@@ -610,17 +605,11 @@ class App(ctk.CTk):
           model_path    : chatllm .bin 模型路徑（chatllm 後端用）
           chatllm_dir   : chatllm DLL 目錄
         """
-        try:
-            with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
-                json.dump(settings, f, indent=2, ensure_ascii=False)
-        except Exception:
-            pass
+        self._cfg.save(settings)
 
     def _patch_setting(self, key: str, value):
-        """讀取現有設定、更新單一 key，再寫回 settings.json。"""
-        s = self._load_settings()
-        s[key] = value
-        self._save_settings(s)
+        """讀取現有設定、更新單一 key，再寫回。"""
+        self._cfg.patch(key, value)
 
     def _apply_ui_prefs(self, settings: dict):
         """主執行緒：根據儲存的偏好設定同步 UI 控件與外觀。"""

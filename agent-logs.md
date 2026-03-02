@@ -1,5 +1,15 @@
 # Agent 專案修改日誌
 
+* 更新日期時間：2026-03-02 23:48
+* 重點：#11 設定檔管理統一 — 新增 `config.py`，`app.py` 改用統一模組
+* 影響：
+  * 新增 `config.py`（97 行）：`SettingsSchema` dataclass 定義所有設定欄位+預設值、`AppSettings` class 提供 `load`/`save`/`patch`/`load_with_defaults`
+  * `app.py`：刪除 `SETTINGS_FILE` 常數和 `_load_settings`/`_save_settings`/`_patch_setting` 的 inline 實作，改為 `self._cfg = AppSettings()` 委託
+  * 新增 `test_config.py`（10 個測試）：覆蓋 schema 預設值、save/load/patch/load_with_defaults/variant/unicode
+* 結果：設定讀寫邏輯統一管理於 `config.py`。`app-gpu.py` 未來也可用 `AppSettings("gpu")` 一行取代。59 個測試全部通過。
+* 更新者：antigravity agent
+
+---
 * 更新日期時間：2026-03-02 23:41
 * 重點：消除 `_find_vad_model()` 重複 — `cuda_backend.py` 改用 base class 共用方法
 * 影響：

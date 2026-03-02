@@ -36,6 +36,41 @@ GAP_SEC              = 0.08
 RT_SILENCE_CHUNKS    = 25    # ~0.8s 靜音後觸發轉錄
 RT_MAX_BUFFER_CHUNKS = 600   # ~19s 上限強制轉錄
 
+# ══════════════════════════════════════════════════════════════════════
+# 語系名稱 → ISO 639-1 語言代碼
+# ══════════════════════════════════════════════════════════════════════
+
+LANG_CODE: dict[str, str] = {
+    "Chinese":    "zh",
+    "English":    "en",
+    "Japanese":   "ja",
+    "Korean":     "ko",
+    "Cantonese":  "yue",
+    "French":     "fr",
+    "German":     "de",
+    "Spanish":    "es",
+    "Portuguese": "pt",
+    "Russian":    "ru",
+    "Arabic":     "ar",
+    "Thai":       "th",
+    "Vietnamese": "vi",
+    "Indonesian": "id",
+    "Malay":      "ms",
+    # 中文 UI 標籤
+    "中文":  "zh",
+    "英文":  "en",
+    "日文":  "ja",
+    "韓文":  "ko",
+    "法文":  "fr",
+    "德文":  "de",
+    "西班牙文": "es",
+    "葡萄牙文": "pt",
+    "俄文":  "ru",
+    "阿拉伯文": "ar",
+    "泰文":  "th",
+    "越南文": "vi",
+}
+
 
 # ══════════════════════════════════════════════════════════════════════
 # VAD 分段

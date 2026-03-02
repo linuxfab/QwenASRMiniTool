@@ -13,40 +13,11 @@ from pathlib import Path
 
 import numpy as np
 
-from asr_utils import SAMPLE_RATE
+from asr_utils import SAMPLE_RATE, LANG_CODE
 from .base import ASREngineBase, BASE_DIR
 
-# 語系名稱 → ISO 639-1 語言代碼（從 chatllm_engine.py 複製）
-_LANG_CODE: dict[str, str] = {
-    "Chinese":    "zh",
-    "English":    "en",
-    "Japanese":   "ja",
-    "Korean":     "ko",
-    "Cantonese":  "yue",
-    "French":     "fr",
-    "German":     "de",
-    "Spanish":    "es",
-    "Portuguese": "pt",
-    "Russian":    "ru",
-    "Arabic":     "ar",
-    "Thai":       "th",
-    "Vietnamese": "vi",
-    "Indonesian": "id",
-    "Malay":      "ms",
-    # 中文 UI 標籤
-    "中文":  "zh",
-    "英文":  "en",
-    "日文":  "ja",
-    "韓文":  "ko",
-    "法文":  "fr",
-    "德文":  "de",
-    "西班牙文": "es",
-    "葡萄牙文": "pt",
-    "俄文":  "ru",
-    "阿拉伯文": "ar",
-    "泰文":  "th",
-    "越南文": "vi",
-}
+# _LANG_CODE 已移至 asr_utils.LANG_CODE，保留別名供內部相容
+_LANG_CODE = LANG_CODE
 
 
 class VulkanEngine(ASREngineBase):

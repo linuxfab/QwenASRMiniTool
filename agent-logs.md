@@ -1,5 +1,15 @@
 # Agent 專案修改日誌
 
+* 更新日期時間：2026-03-02 23:25
+* 重點：程式碼優化 Phase 1 — 共用程式碼提取、刪除殘留重複
+* 影響：
+  * `asr_utils.py`：新增 `LANG_CODE` 共用字典（語系名稱 → ISO 639-1 代碼，含 27 個映射）
+  * `chatllm_engine.py`：改為 import `LANG_CODE`（刪除 31 行本地定義）；刪除已被 `engine/vulkan_backend.py` 取代的 `ChatLLMASREngine` class（消除 256 行死碼）
+  * `engine/vulkan_backend.py`：改為 import `LANG_CODE`（刪除 30 行 "從 chatllm_engine.py 複製" 的本地定義）
+* 結果：消除 ~317 行重複/死碼。`_LANG_CODE` 字典統一維護於 `asr_utils.py`。`chatllm_engine.py` 從 729 行縮減至 465 行。24 個測試全部通過。
+* 更新者：antigravity agent
+
+---
 * 更新日期時間：2026-03-01 12:30
 * 重點：架構重構 — 拆分 app.py、跨平台修復、新增單元測試
 * 影響：

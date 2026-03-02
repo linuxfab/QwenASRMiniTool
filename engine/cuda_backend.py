@@ -33,17 +33,6 @@ _EN_SENT_END   = frozenset('.,!?;')
 MAX_CHARS = 20
 
 
-def _find_vad_model():
-    """依序在 GPUModel/ 和 ov_models/ 尋找 Silero VAD ONNX。"""
-    candidates = [
-        GPU_MODEL_DIR / "silero_vad_v4.onnx",
-        OV_MODEL_DIR  / "silero_vad_v4.onnx",
-    ]
-    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
-        candidates.insert(0, Path(sys._MEIPASS) / "ov_models" / "silero_vad_v4.onnx")
-    return next((p for p in candidates if p.exists()), None)
-
-
 def _ts_to_subtitle_lines(
     ts_list,
     raw_text: str,
@@ -173,16 +162,7 @@ class CUDAEngine(ASREngineBase):
                 cb(msg)
 
         # ── VAD + Diarize + OpenCC ────────────────────────────────
-        vad_path = _find_vad_model()
-        if vad_path is None:
-            raise FileNotFoundError(
-                "找不到 Silero VAD 模型 (silero_vad_v4.onnx)。\n"
-                f"請將模型放入 {GPU_MODEL_DIR} 或先執行 CPU 版本下載。"
-            )
-        _s("載入 VAD 模型…")
-        self.vad_sess = ort.InferenceSession(
-            str(vad_path), providers=["CPUExecutionProvider"]
-        )
+        self._load_vad(model_dir, cb=cb)
         self._load_diarization(OV_MODEL_DIR, cb=cb)
         self._load_opencc()
 

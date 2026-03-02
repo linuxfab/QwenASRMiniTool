@@ -1,5 +1,13 @@
 # Agent 專案修改日誌
 
+* 更新日期時間：2026-03-02 23:41
+* 重點：消除 `_find_vad_model()` 重複 — `cuda_backend.py` 改用 base class 共用方法
+* 影響：
+  * `engine/cuda_backend.py`：刪除獨立 `_find_vad_model()` 函式（11行）+ `load()` 中手動 VAD 載入（10行），改為 `self._load_vad(model_dir, cb=cb)` 一行呼叫
+* 結果：VAD 搜尋邏輯統一由 `ASREngineBase._load_vad()` 維護。51 個測試全部通過。
+* 更新者：antigravity agent
+
+---
 * 更新日期時間：2026-03-02 23:35
 * 重點：Phase 3 — 刪除冗餘 Streamlit 前端、修復 main.py 入口點
 * 影響：
